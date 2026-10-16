@@ -1,5 +1,10 @@
 export const SETUP_CSS = `
 * { box-sizing: border-box; }
+/* Expo's default reset locks body scrolling for native ScrollView layouts.
+   This web screen uses document flow, so let the document own scrolling. */
+html { height: auto; min-height: 100%; overflow-y: auto; }
+body { height: auto; min-height: 100vh; overflow: visible; }
+#root { display: block; height: auto; min-height: 100vh; }
 body { margin: 0; background: #f5f6f8; color: #20242b; font: 15px/1.5 'Segoe UI', sans-serif; }
 button, input, textarea, select { font: inherit; }
 button, .button { cursor: pointer; display: inline-block; border: 1px solid #cbd1db; background: white; border-radius: 8px; padding: 10px 15px; color: #293849; text-decoration: none; font-weight: 550; }
