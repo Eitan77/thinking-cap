@@ -42,7 +42,7 @@ async def main():
                 if event.get('type')=='transcript':
                     if event['isFinal']:
                         assert 'capital' in event['text'].lower() and 'japan' in event['text'].lower(),event
-                        print(json.dumps({'result':'PASS','transcript':event['text'],'partialEvents':partials,'elapsedSeconds':round(time.monotonic()-started,2)}))
+                        print(json.dumps({'result':'PASS','transcript':event['text'],'partialEvents':partials,'elapsedSeconds':round(time.monotonic()-started,2),'endpointMs':event.get('endpointMs'),'sttMs':event.get('sttMs')}))
                         break
                     partials+=1
         finally:
@@ -50,4 +50,5 @@ async def main():
             try: await sender
             except asyncio.CancelledError: pass
 
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())

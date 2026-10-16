@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { ReasoningEffort } from "openai/resources/shared";
 import { apiError, ChatGPTError, isObject } from "./errors.js";
 import type { StreamResponseOptions } from "./types.js";
 
@@ -40,6 +41,9 @@ export async function streamResponse(
   try {
     const result = await client.responses.create({
       model: options.model,
+      // Account catalog validation happens in our loopback helper. Catalogs can
+      // advertise newer effort values before this SDK's TypeScript union does.
+      ...(options.effort ? { reasoning: { effort: options.effort as NonNullable<ReasoningEffort> } } : {}),
       input: input.map((message) => ({ role: message.role, content: message.content })),
       ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
       store: false,

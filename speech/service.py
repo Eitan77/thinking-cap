@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 import wave
+import itertools
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,7 +35,7 @@ def load_models():
     global model, voice, ready, failure
     try:
         torch.set_num_threads(1)
-        model = WhisperModel(os.environ.get('THINKING_CAP_WHISPER_MODEL', 'base.en'), device='cpu', compute_type='int8', download_root=str(ROOT / '.local/models/whisper'))
+        model = WhisperModel(os.environ.get('THINKING_CAP_WHISPER_MODEL', 'base.en'), device='cpu', compute_type='int8', cpu_threads=max(2, min(4, os.cpu_count() or 2)), num_workers=1, download_root=str(ROOT / '.local/models/whisper'))
         voice = PiperVoice.load(str(ROOT / '.local/models/en_US-lessac-medium.onnx'))
         # Warm the ONNX VAD cache before accepting microphone connections.
         load_silero_vad(onnx=True)
@@ -111,37 +112,49 @@ async def listen(ws: WebSocket):
     last_partial = 0
     utterance = str(uuid.uuid4())
     suppressed = False
-    silence_ms = 700
+    silence_ms = 500
+    vad_threshold = 0.35
     revision = 0
-    transcript_queue = asyncio.Queue(maxsize=8)
+    transcript_queue = asyncio.PriorityQueue(maxsize=8)
+    sequence = itertools.count()
+    finalized = set()
+    finalized_order = deque(maxlen=256)
+    partial_busy = False
     last_partial_text = ''
     stable_since = 0
 
-    def reset():
+    def reset(invalidate=True):
         nonlocal frames, samples, silence, speech_frames, last_partial, utterance, revision, pending, last_partial_text, stable_since
         frames = []; samples = 0; silence = 0; speech_frames = 0; last_partial = 0
-        utterance = str(uuid.uuid4()); revision += 1
+        utterance = str(uuid.uuid4())
+        if invalidate:
+            revision += 1
         pending = np.empty(0, dtype=np.float32); preroll.clear(); vad.reset_states()
         last_partial_text = ''; stable_since = 0
 
     async def inference_worker():
+        nonlocal last_partial_text, stable_since, partial_busy
         while True:
-            audio, uid, final, rev = await transcript_queue.get()
+            _, _, audio, uid, final, rev, queued_at, endpoint_ms = await transcript_queue.get()
             try:
+                if rev != revision or (not final and (suppressed or uid in finalized)):
+                    continue
+                started = time.monotonic()
                 async with inference_lock:
                     text = await asyncio.to_thread(transcribe, audio)
-                if rev != revision or suppressed:
+                if rev != revision or (not final and (suppressed or uid in finalized)):
                     continue
-                nonlocal last_partial_text, stable_since
-                if text != last_partial_text:
+                if uid == utterance and text != last_partial_text:
                     last_partial_text = text; stable_since = time.monotonic()
-                if text:
-                    await ws.send_json({'type': 'transcript', 'sessionId': session, 'utteranceId': uid, 'text': text, 'isFinal': final, 'timestampMs': int(time.time()*1000)})
+                if text or final:
+                    await ws.send_json({'type': 'transcript', 'sessionId': session, 'utteranceId': uid, 'text': text, 'isFinal': final, 'timestampMs': int(time.time()*1000), 'sttMs': round((time.monotonic()-queued_at)*1000), 'inferenceMs': round((time.monotonic()-started)*1000), 'endpointMs': endpoint_ms})
             except asyncio.CancelledError:
                 raise
             except Exception:
                 await ws.send_json({'type':'error','message':'Transcription failed. Restart listening.'})
             finally:
+                if not final:
+                    partial_busy = False
                 transcript_queue.task_done()
 
     worker = asyncio.create_task(inference_worker())
@@ -149,12 +162,20 @@ async def listen(ws: WebSocket):
 
     async def finish():
         nonlocal frames, samples, silence, speech_frames, last_partial, utterance
-        if speech_frames >= 5 and frames:
+        if speech_frames >= 3 and frames:
             audio = np.concatenate(frames).copy()
+            # Long endpoint silence need not be decoded again by Whisper.
+            if silence > 3200:
+                audio = audio[:len(audio)-silence+3200]
             if transcript_queue.full():
                 await ws.send_json({'type':'error','message':'Speech processing fell behind. Stop and restart listening.'})
                 raise RuntimeError('Speech backlog')
-            transcript_queue.put_nowait((audio, utterance, True, revision))
+            if len(finalized_order) == finalized_order.maxlen:
+                finalized.discard(finalized_order[0])
+            finalized_order.append(utterance)
+            finalized.add(utterance)
+            transcript_queue.put_nowait((0, next(sequence), audio, utterance, True, revision, time.monotonic(), round(silence*1000/16000)))
+            await ws.send_json({'type':'status','message':'Question ended — transcribing final audio…'})
         frames = []; samples = 0; silence = 0; speech_frames = 0; last_partial = 0
         utterance = str(uuid.uuid4()); preroll.clear()
 
@@ -167,11 +188,12 @@ async def listen(ws: WebSocket):
                 command = json.loads(msg['text'])
                 action = command.get('type')
                 if action == 'configure':
-                    silence_ms = max(400, min(2000, int(command.get('silenceMs', 700))))
+                    silence_ms = max(400, min(2000, int(command.get('silenceMs', 500))))
+                    vad_threshold = max(0.2, min(0.8, float(command.get('vadThreshold', 0.35))))
                 elif action == 'arm':
                     reset()
                 elif action == 'suppress':
-                    suppressed = bool(command.get('value')); reset()
+                    suppressed = bool(command.get('value')); reset(invalidate=False)
                 elif action == 'flush':
                     await finish()
                 elif action == 'reset':
@@ -186,7 +208,7 @@ async def listen(ws: WebSocket):
             while len(pending) >= 512:
                 frame = pending[:512].copy(); pending = pending[512:]
                 probability = vad(torch.from_numpy(frame), 16000).item()
-                speaking = probability >= 0.5
+                speaking = probability >= vad_threshold
                 preroll.append(frame)
                 if not frames:
                     if not speaking:
@@ -202,10 +224,12 @@ async def listen(ws: WebSocket):
                     reset()
                     await ws.send_json({'type':'error','message':'Utterance exceeded 30 seconds. Please use shorter questions.'})
                     break
-                if samples - last_partial >= 16000 and not transcript_queue.full():
-                    # One queued partial at most; finals are never dropped for a partial.
+                if samples - last_partial >= 24000 and silence == 0 and not partial_busy and not transcript_queue.full():
+                    # Only one partial can be queued or running. Final jobs have
+                    # priority, preventing redundant rolling decodes from backing up.
                     if transcript_queue.empty():
-                        transcript_queue.put_nowait((np.concatenate(frames).copy(), utterance, False, revision))
+                        partial_busy = True
+                        transcript_queue.put_nowait((1, next(sequence), np.concatenate(frames).copy(), utterance, False, revision, time.monotonic(), 0))
                     last_partial = samples
                 if silence*1000/16000 >= silence_ms:
                     # Require at least 200ms stability after a recently revised partial.

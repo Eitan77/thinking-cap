@@ -38,6 +38,8 @@ export interface LoginProfile {
 export interface ChatGPTModel {
   slug: string;
   displayName: string;
+  supportedEfforts: string[];
+  defaultEffort?: string;
 }
 
 /** Implement in the trusted local process with an OS-backed secret store. Never use plaintext or a hardcoded key. */
@@ -74,6 +76,7 @@ export interface ResponseInputMessage {
 
 export interface StreamResponseOptions {
   model: string;
+  effort?: string;
   input: string | ResponseInputMessage[];
   instructions?: string;
   signal?: AbortSignal;

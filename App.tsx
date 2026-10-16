@@ -5,7 +5,7 @@ import { WindowsAI, WindowsMic, WindowsSpeaker, request } from './src/windows';
 import { SETUP_CSS } from './src/setup-style';
 
 type Session = { status: string; sharing: boolean; profileId?: string; identity?: { email?: string } };
-type Model = { slug: string; displayName: string };
+type Model = { slug: string; displayName: string; supportedEfforts: string[]; defaultEffort?: string };
 type Log = { question: string; answer: string; total: number; first: number | null };
 const SCRIPT_KEY = 'thinking-cap-instructions';
 function savedScript() {
@@ -30,6 +30,7 @@ function WebApp() {
   const [profiles, setProfiles] = useState<{ id: string; label: string }[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState('');
+  const [effort, setEffort] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
   const [authUrl, setAuthUrl] = useState('');
   const [authNotice, setAuthNotice] = useState('');
@@ -48,7 +49,10 @@ function WebApp() {
   const [scriptSaved, setScriptSaved] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [device, setDevice] = useState('');
-  const [silence, setSilence] = useState('700');
+  const [silence, setSilence] = useState('500');
+  const [vadThreshold, setVadThreshold] = useState('0.35');
+  const [decision, setDecision] = useState('');
+  const [lastTiming, setLastTiming] = useState<{endpoint?:number;stt?:number;gpt?:number}>({});
   const [logging, setLogging] = useState(false);
   const [logs, setLogs] = useState<Log[]>([]);
   const [ttsMs, setTtsMs] = useState<number | null>(null);
@@ -93,8 +97,12 @@ function WebApp() {
     try {
       const list: Model[] = await request('models');
       setModels(list);
-      setModel(list[0]?.slug || '');
-      ai.model = list[0]?.slug || '';
+      let saved: {model?:string;effort?:string} = {};
+      try { saved = JSON.parse(localStorage.getItem('thinking-cap-model') || '{}'); } catch {}
+      const selected = list.find(m => m.slug === saved.model) || list.find(m => m.slug === 'gpt-6.1-sol') || list[0];
+      const nextEffort = selected?.supportedEfforts?.includes(saved.effort || '') ? saved.effort! : selected?.supportedEfforts?.[0] || '';
+      setModel(selected?.slug || ''); ai.model = selected?.slug || '';
+      setEffort(nextEffort); ai.effort = nextEffort;
       if (!list.length) setAuthNotice('Your account returned no available models. Check plan access or reconnect.');
     } catch (e) { setAuthNotice(message(e)); }
   }
@@ -107,19 +115,25 @@ function WebApp() {
       mic.sending = !blocked && (testingRef.current || controller.mode === 'auto' || armedRef.current);
     };
     controller.onError = setError;
+    controller.onDecision = text => { setDecision(text); setNotice(text); };
     controller.onResult = (question, result, timing) => {
       setAnswer(result.kind === 'answer' ? result.text : result.kind === 'silent' ? 'No spoken answer — GPT returned SILENT.' : result.reason);
+      setNotice(result.kind === 'answer' ? 'Answer received. Playing it now.' : result.kind === 'silent' ? 'GPT returned SILENT. Check what was heard and your instructions below.' : result.reason);
+      setLastTiming(old => ({...old,gpt:timing.totalMs}));
+      setDecision(result.kind === 'silent' ? 'GPT chose SILENT. Check the transcript or adjust your instructions.' : result.kind === 'answer' ? 'Answer received.' : result.reason);
       if (loggingRef.current) setLogs(old => [{ question, answer: timing.text, total: timing.totalMs, first: timing.firstTokenMs }, ...old].slice(0, 30));
     };
     speaker.onSound = setTtsMs;
     mic.onTranscript = event => {
       setTranscript(event.text);
       if (testingRef.current) { setNotice('Microphone works. This transcript stays local; nothing was sent to GPT.'); return; }
+      if (event.isFinal) setLastTiming({endpoint:event.endpointMs,stt:event.sttMs});
       const activated = armedRef.current;
       if (event.isFinal && controller.mode === 'assistant') { mic.stop(); disarm(); }
       controller.transcript(event, activated);
     };
     mic.onError = text => { stop(); setError(text); };
+    mic.onStatus = text => { if (!testingRef.current) setDecision(text); };
     let disposed = false;
     let polling = false;
     async function poll() {
@@ -137,7 +151,7 @@ function WebApp() {
         const key = data.session.status === 'connected' && data.session.sharing ? data.session.profileId || 'active' : '';
         if (key && key !== loadedProfile.current) { loadedProfile.current = key; setAuthNotice(''); await loadModels(); }
         if (!key) {
-          loadedProfile.current = ''; setModels([]); setModel(''); ai.model = '';
+          loadedProfile.current = ''; setModels([]); setModel(''); setEffort(''); ai.model = ''; ai.effort = '';
           if (controller.mode !== 'off') stop();
         }
         const health = await request('health');
@@ -170,7 +184,7 @@ function WebApp() {
     if (next === 'assistant') { controller.setMode(next); setMode(next); setNotice('Click Speak once, ask your question, then pause.'); return; }
     setBusy(true);
     try {
-      await mic.start(device, Number(silence));
+      await mic.start(device, Number(silence), Number(vadThreshold));
       if (epoch !== generation.current) return;
       await refreshDevices(); controller.setMode(next); setMode(next); mic.sending = true;
       setNotice('Auto is listening. Ask a question and pause. Stop switches the microphone off.');
@@ -183,7 +197,7 @@ function WebApp() {
     stop(); controller.setMode('assistant'); setMode('assistant'); setBusy(true); setError('');
     const epoch = generation.current;
     try {
-      await mic.start(device, Number(silence));
+      await mic.start(device, Number(silence), Number(vadThreshold));
       if (epoch !== generation.current) return;
       await refreshDevices(); mic.command({ type: 'arm' }); armedRef.current = true; setArmed(true); mic.sending = true;
       setTranscript(''); setNotice('Listening. Speak now, then pause. You can also click Finish & send.');
@@ -197,7 +211,7 @@ function WebApp() {
     stop(); setBusy(true); setError(''); setTranscript('');
     const epoch = generation.current;
     try {
-      await mic.start(device, Number(silence));
+      await mic.start(device, Number(silence), Number(vadThreshold));
       if (epoch !== generation.current) return;
       await refreshDevices(); testingRef.current = true; setTestingMic(true); mic.sending = true;
       setNotice('Microphone test: say a sentence. Your words will appear below. Nothing goes to GPT.');
@@ -229,6 +243,20 @@ function WebApp() {
     setError(''); setNotice('Sending your typed question…'); setTranscript(input.trim()); controller.manual(input); setInput('');
   }
   const status = busy ? 'Opening microphone…' : testingMic ? 'Testing microphone (local only)' : testingSound ? 'Playing test audio…' : state === 'THINKING' ? 'Waiting for GPT…' : state === 'SPEAKING' ? 'Speaking answer…' : armed ? 'Listening to your question…' : mode === 'auto' ? 'Auto is listening' : mode === 'assistant' ? 'Ready for one question' : 'Off — microphone released';
+  function chooseModel(slug: string) {
+    stop(); controller.clear();
+    const selected = models.find(m => m.slug === slug);
+    const nextEffort = selected?.supportedEfforts?.[0] || '';
+    setModel(slug); ai.model = slug; setEffort(nextEffort); ai.effort = nextEffort;
+    try { localStorage.setItem('thinking-cap-model', JSON.stringify({model:slug,effort:nextEffort})); } catch {}
+    setNotice('Model changed. Using its fastest listed reasoning effort. Conversation cleared.');
+  }
+  function chooseEffort(value: string) {
+    stop(); controller.clear(); setEffort(value); ai.effort = value;
+    try { localStorage.setItem('thinking-cap-model', JSON.stringify({model,effort:value})); } catch {}
+    setNotice('Reasoning effort saved. Start listening again when ready.');
+  }
+  const selectedModel = models.find(m => m.slug === model);
   return <><style>{SETUP_CSS}</style><main>
     <header><h1>Thinking Cap</h1><p>Your Windows setup. Start at step 1.</p></header>
     <div className="servicebar"><span><i className={helperReady ? 'good' : ''} />App: {helperReady === null ? 'checking…' : helperReady ? 'running' : 'disconnected'}</span><span><i className={speechReady ? 'good' : ''} />Local speech: {speechReady ? 'ready' : 'starting…'}</span><button onClick={() => { setNotice('Checking the local app and speech service…'); void pollRef.current().then(() => setNotice('Status checked. See App and Local speech above.')); }}>Check connection</button></div>
@@ -244,7 +272,10 @@ function WebApp() {
         {authNotice && !authUrl && <p className="hint" role="status">{authNotice}</p>}
         {session.status === 'connected' && !session.sharing && <p className="warning">You signed in, but plan access isn’t enabled. Reconnect and approve ChatGPT plan usage.</p>}
       </>}
-      {connected && <div className="model"><label htmlFor="model">Model</label><div className="inline"><select id="model" value={model} onChange={e => { stop(); controller.clear(); setModel(e.target.value); ai.model = e.target.value; setNotice('Model changed. Conversation cleared.'); }}><option value="">{models.length ? 'Choose a model' : 'No models loaded'}</option>{models.map(m => <option key={m.slug} value={m.slug}>{m.displayName}</option>)}</select><button onClick={() => void loadModels()}>Retry model list</button></div>{authNotice && <p className="hint">{authNotice}</p>}</div>}
+      {connected && <div className="model"><label htmlFor="model">Model</label><div className="inline"><select id="model" value={model} onChange={e => chooseModel(e.target.value)}><option value="">{models.length ? 'Choose a model' : 'No models loaded'}</option>{models.map(m => <option key={m.slug} value={m.slug}>{m.displayName}</option>)}</select><button onClick={() => void loadModels()}>Retry model list</button></div>
+        <label htmlFor="effort" style={{marginTop:12}}>Reasoning effort</label><select id="effort" value={effort} onChange={e => chooseEffort(e.target.value)}><option value="">Model default</option>{selectedModel?.supportedEfforts?.map((level,index) => <option key={level} value={level}>{level === 'low' ? 'Low' : level} {index === 0 ? '— fastest available' : ''}</option>)}</select>
+        {model === 'gpt-6.1-sol' && !selectedModel?.supportedEfforts?.includes('none') && <p className="hint">This connection lists Low as the fastest GPT-6.1 Sol effort. Instant / no-reasoning is not offered for this model.</p>}
+        {authNotice && <p className="hint">{authNotice}</p>}</div>}
       <details><summary>Account options</summary>{profiles.length > 0 && <><label htmlFor="account">Saved account</label><select id="account" value={session.profileId || ''} onChange={e => void auth('profile', { id: e.target.value })}>{profiles.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></>}<div className="actions"><button disabled={authBusy} onClick={() => void auth('signin', { newProfile: true })}>Add another account</button><a href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">ChatGPT usage & access ↗</a></div></details>
     </section>
 
@@ -259,13 +290,15 @@ function WebApp() {
       <div className="mode-grid" aria-label="Listening mode">{([{ id: 'off', name: 'Off', description: 'Microphone released.' }, { id: 'assistant', name: 'One question at a time', description: 'Click Speak once when ready.' }, { id: 'auto', name: 'Auto', description: 'Send each detected question.' }] as { id: Mode; name: string; description: string }[]).map(m => <button key={m.id} aria-pressed={mode === m.id} className={mode === m.id ? 'selected' : ''} onClick={() => void selectMode(m.id)}><strong>{m.name}</strong><small>{m.description}</small></button>)}</div>
       <div className="actions"><button className="primary" disabled={busy} onClick={() => armed ? (mic.sending = false, mic.command({ type: 'flush' }), setNotice('Finishing your question…')) : void speakOnce()}>{armed ? 'Finish & send' : busy ? 'Opening microphone…' : 'Speak once'}</button><button className="stop" onClick={() => { stop(); setNotice('Stopped. Microphone and audio are off.'); }}>Stop / mic off</button></div>
       <div className="listen-status" role="status"><i className={armed || mode === 'auto' || testingMic ? 'good' : ''} />{status}</div>
+      {decision && <p className="hint" role="status">{decision}</p>}
+      {(lastTiming.stt !== undefined || lastTiming.gpt !== undefined) && <p className="hint">Pause {lastTiming.endpoint ?? '—'} ms · Transcription {lastTiming.stt ?? '—'} ms · GPT {lastTiming.gpt ?? '—'} ms · Voice {ttsMs ?? '—'} ms</p>}
       {mode === 'auto' && <p className="hint">Ask a question and pause. Auto uses everything this microphone hears; it doesn’t identify speakers. Listening pauses during spoken answers.</p>}
       <div className="output"><label>Heard</label><div>{transcript || 'Your words will appear here.'}</div><label>Answer</label><div className="answer" aria-live="polite">{answer || 'Your answer will appear here.'}</div></div>
-      <button className="text-button" onClick={() => { stop(); controller.clear(); setTranscript(''); setAnswer(''); setLogs([]); setNotice('Conversation cleared. Your saved instructions are still applied.'); }}>Clear conversation</button>
+      <div className="actions"><button disabled={!transcript.trim()} onClick={() => { setInput(transcript); setNotice('Transcript copied into the question box. Edit it if needed, then Send question.'); document.getElementById('question')?.focus(); }}>Edit / resend heard text</button><button className="text-button" onClick={() => { stop(); controller.clear(); setTranscript(''); setAnswer(''); setDecision(''); setLastTiming({}); setLogs([]); setNotice('Conversation cleared. Your saved instructions are still applied.'); }}>Clear conversation</button></div>
     </section>
 
     <section className="step audio"><h2>Check your audio</h2><p>These tests work before signing in. Nothing is sent to GPT.</p><div className="actions"><button disabled={busy} onClick={() => void testSound()}>{testingSound ? 'Restart speaker test' : 'Test speakers'}</button><button disabled={busy} onClick={() => void testMic()}>{testingMic ? 'Stop microphone test' : 'Test microphone'}</button></div>{testingMic && <p className="hint">Say a sentence. The transcript appears in “Heard” above. Test ends after 15 seconds.</p>}{speechError && <p className="hint">{speechError}</p>}<p className="hint">Sound uses your Windows default speakers or headphones.</p>
-      <details><summary>Microphone & pause settings</summary><label htmlFor="mic">Microphone</label><select id="mic" value={device} onChange={e => { stop(); setDevice(e.target.value); setNotice('Microphone changed. Click Speak once, Auto, or Test microphone to use it.'); }}><option value="">Windows default input</option>{devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>)}</select><label htmlFor="silence">How long to wait after speech</label><select id="silence" value={silence} onChange={e => { stop(); setSilence(e.target.value); setNotice('Pause setting updated. Start listening again when ready.'); }}>{[500, 700, 1000, 1500].map(ms => <option key={ms} value={ms}>{ms} ms</option>)}</select><p className="hint">A longer pause helps if it cuts off the end of your question.</p></details>
+      <details><summary>Microphone & pause settings</summary><label htmlFor="mic">Microphone</label><select id="mic" value={device} onChange={e => { stop(); setDevice(e.target.value); setNotice('Microphone changed. Click Speak once, Auto, or Test microphone to use it.'); }}><option value="">Windows default input</option>{devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>)}</select><label htmlFor="silence">How long to wait after speech</label><select id="silence" value={silence} onChange={e => { stop(); setSilence(e.target.value); setNotice('Pause setting updated. Start listening again when ready.'); }}>{[500, 700, 1000, 1500].map(ms => <option key={ms} value={ms}>{ms} ms</option>)}</select><label htmlFor="sensitivity">Voice detection</label><select id="sensitivity" value={vadThreshold} onChange={e => { stop(); setVadThreshold(e.target.value); setNotice('Voice sensitivity updated. Start listening again when ready.'); }}><option value="0.35">Sensitive — better for quiet speech</option><option value="0.5">Normal — less background pickup</option></select><p className="hint">A longer pause helps if it cuts off the end of your question. Sensitive detection may pick up more background speech.</p></details>
     </section>
     <details className="debug"><summary>Debug details</summary><p className="hint">Speaker preparation: {ttsMs === null ? '—' : `${ttsMs} ms`}. Transcript and answer history is off by default.</p><label className="check"><input type="checkbox" checked={logging} onChange={e => { setLogging(e.target.checked); loggingRef.current = e.target.checked; if (!e.target.checked) setLogs([]); }} />Keep recent turns in this page</label><button onClick={() => setLogs([])}>Clear debug history</button>{logs.map((log, i) => <div className="turn" key={i}><p>{log.question}</p><strong>{log.answer}</strong><p className="hint">First token {log.first ?? '—'} ms · GPT complete {log.total} ms</p></div>)}</details>
     <footer>Audio stays on this PC. Submitted questions, your script and recent answered turns go to GPT.</footer>

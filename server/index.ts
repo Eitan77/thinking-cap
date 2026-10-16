@@ -8,6 +8,7 @@ import {WebSocketServer,WebSocket} from 'ws';
 import {createChatGPT,ChatGPTError} from '../vendor/siwc-local/src/index.js';
 import {encryption} from './dpapi.js';
 import {validateAnswer} from '../src/core.js';
+import {clockContext} from './clock.js';
 
 const port=4317, origin=`http://127.0.0.1:${port}`;
 const allowed=new Set([origin,`http://localhost:${port}`,'http://localhost:8081','http://127.0.0.1:8081']);
@@ -22,6 +23,13 @@ const chatgpt=createChatGPT({appName:'Thinking Cap',appId:'thinking-cap',redirec
   }
 });
 let authBusy=false, authError='', authUrl='';
+let catalogCache: {profile:string;expires:number;models:Awaited<ReturnType<typeof chatgpt.listModels>>}|undefined;
+async function modelsForAccount(){
+  const session=await chatgpt.getSession();
+  if(catalogCache&&catalogCache.profile===session.profileId&&catalogCache.expires>Date.now())return catalogCache.models;
+  const models=await chatgpt.listModels();
+  catalogCache={profile:session.profileId??'',expires:Date.now()+60000,models};return models;
+}
 function safeError(e:unknown){return e instanceof ChatGPTError?`${e.code}: ${e.message}`:e instanceof Error&&e.message.startsWith('Windows ')?e.message:'Operation failed. Check the local services and try again.';}
 function json(res:ServerResponse,status:number,body:unknown){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));}
 async function body(req:IncomingMessage){let text='';for await(const chunk of req){text+=chunk;if(text.length>64000)throw new Error('Request too large');}return JSON.parse(text||'{}');}
@@ -48,7 +56,7 @@ const server=createServer(async(req,res)=>{
       if(path==='/api/cancel-signin'&&req.method==='POST'){chatgpt.cancelSignIn();authUrl='';authError='';json(res,200,{ok:true});return;}
       if(path==='/api/profile'&&req.method==='POST'){const data=await body(req);json(res,200,await chatgpt.selectProfile(String(data.id)));return;}
       if(path==='/api/signout'&&req.method==='POST'){await chatgpt.disconnect();json(res,200,{ok:true});return;}
-      if(path==='/api/models'&&req.method==='GET'){json(res,200,await chatgpt.listModels());return;}
+      if(path==='/api/models'&&req.method==='GET'){json(res,200,await modelsForAccount());return;}
       if(path==='/api/health'&&req.method==='GET'){
         try{const response=await speech('/health',{signal:AbortSignal.timeout(1500)});json(res,200,await response.json());}
         catch{json(res,200,{ready:false,error:'Local speech service is starting or unavailable.'});}return;
@@ -56,11 +64,13 @@ const server=createServer(async(req,res)=>{
       if(path==='/api/ask'&&req.method==='POST'){
         const data=await body(req);
         if(typeof data.question!=='string'||!data.question.trim()||data.question.length>4000||typeof data.script!=='string'||data.script.length>12000||typeof data.model!=='string') {json(res,400,{error:'Invalid question, model, or script.'});return;}
+        const selected=(await modelsForAccount()).find(m=>m.slug===data.model);
+        if(!selected||(data.effort&&(!selected.supportedEfforts.includes(data.effort)))){json(res,400,{error:'That model/effort combination is not listed for this account. Refresh the model list.'});return;}
         const history=Array.isArray(data.history)?data.history.slice(-8):[];
         if(history.some((m:any)=>!['user','assistant'].includes(m.role)||typeof m.content!=='string'||m.content.length>4000)){json(res,400,{error:'Invalid history'});return;}
         const ac=new AbortController();res.on('close',()=>ac.abort());
         const started=performance.now();let firstTokenMs:number|null=null;
-        const result=await chatgpt.streamResponse({model:data.model,instructions:data.script,input:[...history,{role:'user',content:data.question}],signal:ac.signal,onDelta:()=>{firstTokenMs??=Math.round(performance.now()-started);}});
+        const result=await chatgpt.streamResponse({model:data.model,effort:data.effort||undefined,instructions:data.script+'\n\n'+clockContext(data.timeZone),input:[...history,{role:'user',content:data.question}],signal:ac.signal,onDelta:()=>{firstTokenMs??=Math.round(performance.now()-started);}});
         const checked=validateAnswer(result.text);if(checked.kind==='error'){json(res,422,{error:checked.reason});return;}
         json(res,200,{text:result.text,firstTokenMs,totalMs:Math.round(performance.now()-started)});return;
       }

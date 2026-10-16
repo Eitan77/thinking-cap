@@ -1,6 +1,6 @@
 export type Mode = 'off' | 'auto' | 'assistant';
 export type HatState = 'OFF' | 'LISTENING' | 'HEARING' | 'THINKING' | 'SPEAKING' | 'COOLDOWN' | 'ERROR';
-export type TranscriptEvent = {sessionId:string; utteranceId:string; text:string; isFinal:boolean; timestampMs:number};
+export type TranscriptEvent = {sessionId:string; utteranceId:string; text:string; isFinal:boolean; timestampMs:number; sttMs?:number; endpointMs?:number};
 export const DEFAULT_SCRIPT = `You are a discreet audio assistant. Answer reliably using general knowledge, reasoning, calculation, or facts supplied in this conversation.
 Return only the shortest complete answer suitable for speaking. Include necessary units. Do not repeat the question or begin with filler. Round non-integer square roots to two decimal places.
 Do not invent personal preferences, intentions, private facts, calendar entries, or current facts that are not established by reliable context. If unanswerable, ambiguous, subjective, or missing necessary data, output exactly SILENT.
@@ -11,7 +11,10 @@ export function questions(text:string):string[] {
   const parts = text.trim().match(/[^?]+\?+|[^?]+$/g) ?? [];
   return parts.map(x => x.trim()).filter(x => {
     if (!x || /(?:\b(?:of|the|a|an|to|and|or|but|with|about|from|what|which|whose|where)|\.\.\.)\s*\??$/i.test(x)) return false;
-    return /\?$/.test(x) || /^(?:(?:hey|okay|so|please)[, ]+)*(?:who|what|when|where|why|how|which|whose|whom|is|are|am|was|were|do|does|did|can|could|would|will|should|has|have|had|tell me|calculate|compute|explain|give me)\b/i.test(x);
+    const opening = x.replace(/^(?:(?:hey(?: (?:thinking )?cap)?|okay|ok|so|please|um|uh|well|wait|actually|alright|all right|right|now)[,!.\s]+)+/i,'');
+    return /\?$/.test(x) || /^(?:who|what|when|where|why|how|which|whose|whom|is|are|am|was|were|do|does|did|can|could|would|will|should|has|have|had|tell me|calculate|compute|explain|give me)\b/i.test(opening)
+      || /\b(?:i (?:wonder|was wondering)|does anyone know|do you know|can you tell me)\b.*\b(?:who|what|when|where|why|how|which)\b/i.test(opening)
+      || /(?:[.!]\s+|\b(?:quick question|question is|hey cap)[,:]?\s+)(?:what|how|who|where|when|why|can|could|is|are)\b/i.test(opening);
   });
 }
 export function validateAnswer(raw:string):{kind:'answer';text:string}|{kind:'silent'}|{kind:'error';reason:string} {
@@ -34,6 +37,7 @@ export class Controller {
   onState:(state:HatState)=>void = ()=>{};
   onResult:(question:string,result:ReturnType<typeof validateAnswer>,timing:Result)=>void = ()=>{};
   onError:(message:string)=>void=()=>{};
+  onDecision:(message:string)=>void=()=>{};
   constructor(private ai:AIProvider,private speaker:Speaker) {}
   private set(state:HatState) { this.state=state; this.onState(state); }
   setMode(mode:Mode) { this.cancel(); this.mode=mode; this.set(mode==='off'?'OFF':'LISTENING'); }
@@ -42,12 +46,16 @@ export class Controller {
   cancel() { this.epoch++; this.active?.abort(); this.speaker.stop(); this.queue=[]; this.seen.clear(); }
   interrupt() { this.cancel(); this.set(this.mode==='off'?'OFF':'LISTENING'); }
   transcript(event:TranscriptEvent,activated=false) {
-    if(this.mode==='off'||this.state==='SPEAKING'||this.state==='COOLDOWN')return;
+    if(this.mode==='off')return;
+    // Audio capture already excludes playback. A sealed final from before
+    // playback may arrive late from CPU STT and must still join the queue.
+    if(!event.isFinal&&(this.state==='SPEAKING'||this.state==='COOLDOWN'))return;
     if(!event.isFinal){ if(!this.draining)this.set('HEARING'); return; }
     const key=event.sessionId+':'+event.utteranceId;
     if(this.seen.has(key))return;
     this.seen.add(key); if(this.seen.size>2000)this.seen.delete(this.seen.values().next().value!);
     const candidates=this.mode==='auto'?questions(event.text):activated?[event.text.trim()].filter(Boolean):[];
+    this.onDecision(candidates.length?`${candidates.length} question${candidates.length===1?'':'s'} queued for GPT.`:!event.text.trim()?'Speech ended, but no words were recognized. Try speaking closer to the microphone.':'Skipped: no complete question detected. You can edit and resend what was heard.');
     candidates.forEach((question,i)=>this.queue.push({id:key+':'+i,question}));
     if(!this.draining)void this.drain();
   }
@@ -73,7 +81,7 @@ export class Controller {
             this.set('SPEAKING'); await this.speaker.speak(result.text,ac.signal);
             if(ac.signal.aborted||epoch!==this.epoch)continue;
             this.set('COOLDOWN');
-            await new Promise<void>(resolve=>{const t=setTimeout(resolve,650);ac.signal.addEventListener('abort',()=>{clearTimeout(t);resolve();},{once:true});});
+            await new Promise<void>(resolve=>{const t=setTimeout(resolve,250);ac.signal.addEventListener('abort',()=>{clearTimeout(t);resolve();},{once:true});});
           }
         } catch(e) { if(!ac.signal.aborted&&epoch===this.epoch){this.set('ERROR');this.onError(e instanceof Error?e.message:'Request failed.');this.queue=[];} }
         finally { if(epoch===this.epoch){this.active=undefined;if((this.mode as Mode)!=='off')this.set('LISTENING');} }

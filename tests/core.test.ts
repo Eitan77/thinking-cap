@@ -48,3 +48,13 @@ test('off cancels queued questions and stale playback',async()=>{
 test('provider errors clear backlog, surface error, and never speak',async()=>{
   let calls=0;let error='';const c=new Controller({async ask(){calls++;throw new Error('quota');}},{async speak(){assert.fail('must not speak');},stop(){}});c.onError=e=>error=e;c.setMode('auto');c.transcript(event('What is one?','1'));c.transcript(event('What is two?','2'));await wait();assert.equal(calls,1);assert.equal(error,'quota');
 });
+test('conversational openings trigger without punctuation, ordinary embedded clauses do not',()=>{
+  for(const text of ["Um, what's twenty one squared",'Well okay so what is the capital of Japan','I was wondering how far the moon is','Quick question, what is gravity','Hey cap what is two plus two','I forgot. What is the capital of Spain'])assert.equal(questions(text).length,1,text);
+  for(const text of ['I know what is happening','We discussed how many people attended','Well I went to the shop'])assert.equal(questions(text).length,0,text);
+});
+test('a sealed final arriving during playback is queued instead of lost',async()=>{
+  const turns:Turn[]=[];let finish!:()=>void;
+  const c=new Controller({async ask(t){turns.push(t);return{text:turns.length===1?'1':'SILENT',firstTokenMs:1,totalMs:2};}},{speak(){return new Promise<void>(r=>finish=r);},stop(){}});
+  c.setMode('auto');c.transcript(event('What is one?','1'));await wait();assert.equal(c.state,'SPEAKING');
+  c.transcript(event('What is two?','2'));finish();await new Promise(r=>setTimeout(r,300));assert.equal(turns.length,2);c.setMode('off');
+});

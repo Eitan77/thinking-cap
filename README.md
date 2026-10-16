@@ -24,7 +24,17 @@ Open **http://127.0.0.1:4317**. The local speech models warm up on startup; the 
 - **Auto:** microphone audio goes to the localhost speech service. Each completed question detected locally is sent once as its own GPT prompt, including subjective questions. GPT follows your script and decides what to answer. Ordinary statements do not trigger inference. Multiple questions are queued in order. There is no speaker identification: use Auto only in an appropriate, user-controlled setting.
 - **One question at a time:** microphone opens only when **Speak once** is clicked. A silence endpoint or **Finish & send** submits that utterance, including non-question instructions, then releases the microphone. Typed questions also work without microphone access or selecting a mode first.
 
-The default script asks for minimal answers and exactly `SILENT` when information is missing. You may replace it. Exact `SILENT` is never spoken; empty, malformed, incomplete, failed, and oversized responses are suppressed. Audio capture is locked out while an answer plays and for 650 ms afterwards. Speech during that interval is not captured for later submission. This MVP has no barge-in or wearer recognition.
+The default script asks for minimal answers and exactly `SILENT` when information is missing. You may replace it. Exact `SILENT` is never spoken; empty, malformed, incomplete, failed, and oversized responses are suppressed. Audio capture is locked out while an answer plays and for 250 ms afterwards. Speech during that interval is not captured for later submission. This MVP has no barge-in or wearer recognition.
+
+### Model effort and latency
+
+The model and **Reasoning effort** selectors use your account's live catalog. Both selections are saved in this browser. GPT-6.1 Sol defaults to its fastest listed effort, currently **Low** for this connection. This is not an Instant/no-reasoning mode; unsupported values are rejected before inference. The DevKit extension forwards the selected `reasoning.effort` to Responses without changing authentication or encrypted token custody.
+
+The initial endpoint pause is now 500 ms, with sensitive local VAD for quiet speech. Both are adjustable under microphone settings. Partial transcriptions are limited to one queued/running job; final transcriptions get priority and skip trailing endpoint silence. Completed questions that arrive late from STT during playback stay queued. Live audio remains suppressed during playback and a 250 ms cooldown.
+
+The question panel reports the last trigger/silence decision and separate pause, local transcription, GPT, and voice timings. **Edit / resend heard text** lets you correct recognition or retry a skipped question. A SILENT result is a model decision under the applied script, not a transcription miss. Measurements are local software timing, not a physical Bluetooth benchmark.
+
+Each request includes the current device-clock date/time formatted for the browser's timezone. This makes questions such as “What is the date today?” answerable without web search. It does not provide calendar access or establish other current events.
 
 **Auto detection is heuristic, not guaranteed recognition of every question.** It uses local VAD, a configurable silence window, partial transcript stability, question syntax and punctuation. A long hesitation can still split a question; try a longer pause setting if qualifiers are clipped. Utterances over 30 seconds are rejected rather than silently truncated. English is the initial language.
 

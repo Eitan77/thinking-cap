@@ -6,7 +6,8 @@ export async function request(path:string,data?:unknown,signal?:AbortSignal){
 }
 export class WindowsAI implements AIProvider {
   model='';
-  ask(turn:Turn,signal:AbortSignal){if(!this.model)throw new Error('Connect ChatGPT and select a model first.');return request('ask',{...turn,model:this.model},signal);}
+  effort='';
+  ask(turn:Turn,signal:AbortSignal){if(!this.model)throw new Error('Connect ChatGPT and select a model first.');return request('ask',{...turn,model:this.model,effort:this.effort,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},signal);}
 }
 export class WindowsSpeaker implements Speaker {
   private audio?:HTMLAudioElement; private url?:string; private finish?:()=>void;
@@ -31,8 +32,8 @@ export class WindowsSpeaker implements Speaker {
 }
 export class WindowsMic {
   private stream?:MediaStream;private context?:AudioContext;private source?:MediaStreamAudioSourceNode;private worklet?:AudioWorkletNode;private socket?:WebSocket;
-  sending=false;private suppressed=false;private generation=0;onTranscript:(e:TranscriptEvent)=>void=()=>{};onError:(text:string)=>void=()=>{};
-  async start(deviceId:string,silenceMs:number){
+  sending=false;private suppressed=false;private generation=0;onTranscript:(e:TranscriptEvent)=>void=()=>{};onError:(text:string)=>void=()=>{};onStatus:(text:string)=>void=()=>{};
+  async start(deviceId:string,silenceMs:number,vadThreshold=0.35){
     this.stop();
     const generation=this.generation;
     const check=()=>{if(generation!==this.generation)throw new DOMException('Microphone start cancelled.','AbortError');};
@@ -47,9 +48,9 @@ export class WindowsMic {
         socket.onerror=()=>{clearTimeout(timer);reject(new Error('Speech service connection failed.'));};
       });
       check();
-      socket.onmessage=e=>{const event=JSON.parse(e.data);if(event.type==='transcript')this.onTranscript(event);if(event.type==='error')this.onError(event.message);};
+      socket.onmessage=e=>{const event=JSON.parse(e.data);if(event.type==='transcript')this.onTranscript(event);if(event.type==='error')this.onError(event.message);if(event.type==='status')this.onStatus(event.message);};
       socket.onclose=()=>{if(this.socket===socket)this.onError('Speech service disconnected.');};
-      this.command({type:'configure',silenceMs});
+      this.command({type:'configure',silenceMs,vadThreshold});
       const context=new AudioContext();this.context=context;await context.audioWorklet.addModule('/pcm-worklet.js');check();await context.resume();check();
       this.source=context.createMediaStreamSource(stream);this.worklet=new AudioWorkletNode(context,'thinking-cap-pcm');
       const mute=context.createGain();mute.gain.value=0;
