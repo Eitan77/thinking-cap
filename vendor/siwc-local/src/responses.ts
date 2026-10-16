@@ -7,7 +7,7 @@ export async function streamResponse(
   accessToken: string,
   options: StreamResponseOptions,
   signal: AbortSignal,
-): Promise<{ text: string }> {
+): Promise<{ text: string; sources: {url:string;title:string}[]; searched:boolean }> {
   const input = typeof options.input === "string" ? [{ role: "user" as const, content: options.input }] : options.input;
   if (!Array.isArray(input) || input.some((message) =>
     !isObject(message) || !["user", "assistant", "developer"].includes(String(message.role)) || typeof message.content !== "string"
@@ -41,6 +41,7 @@ export async function streamResponse(
   try {
     const result = await client.responses.create({
       model: options.model,
+      ...(options.webSearch ? {tools:[{type:'web_search' as const}],include:['web_search_call.action.sources' as const]} : {}),
       // Account catalog validation happens in our loopback helper. Catalogs can
       // advertise newer effort values before this SDK's TypeScript union does.
       ...(options.effort ? { reasoning: { effort: options.effort as NonNullable<ReasoningEffort> } } : {}),
@@ -60,9 +61,17 @@ export async function streamResponse(
 
     let completed = false;
     let text = "";
+    const sources = new Map<string,{url:string;title:string}>();
+    let searched = false;
+    const collect = (value:unknown) => {
+      if (!isObject(value) || value.type !== 'url_citation' || typeof value.url !== 'string') return;
+      try { const url=new URL(value.url); if(!['https:','http:'].includes(url.protocol))return; sources.set(url.href,{url:url.href,title:typeof value.title==='string'?value.title:url.hostname}); } catch {}
+    };
     for await (const event of result.data) {
       requestSignal.throwIfAborted();
       if (!isObject(event)) continue;
+      if(typeof event.type==='string'&&event.type.startsWith('response.web_search_call.'))searched=true;
+      if(event.type==='response.output_text.annotation.added')collect(event.annotation);
       if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
         text += event.delta;
         if (text.length > 16 * 1024 * 1024) throw new ChatGPTError("response_too_large", "The response was too large. Try a smaller request.");
@@ -73,6 +82,13 @@ export async function streamResponse(
       } else if (event.type === "response.incomplete") {
         throw new ChatGPTError("response_incomplete", "ChatGPT stopped before completing the response. You can keep the partial text or try again.", true);
       } else if (event.type === "response.completed") {
+        for(const item of event.response.output??[]){
+          if(item.type==='web_search_call'){
+            searched=true;
+            if(item.action.type==='search')for(const source of item.action.sources??[])collect({...source,type:'url_citation'});
+          }
+          if(item.type==='message')for(const content of item.content)if(content.type==='output_text')for(const annotation of content.annotations)collect(annotation);
+        }
         completed = true;
         break;
       }
@@ -80,7 +96,7 @@ export async function streamResponse(
     // The SDK may finish iteration on an aborted connection without throwing.
     requestSignal.throwIfAborted();
     if (!completed) throw new ChatGPTError("stream_interrupted", "The response ended before completion. You can keep the partial text or try again.", true);
-    return { text };
+    return { text, sources:[...sources.values()], searched };
   } catch (error) {
     if (signal.aborted) throw new ChatGPTError("cancelled", "The response was cancelled.");
     if (error instanceof ChatGPTError) throw error;

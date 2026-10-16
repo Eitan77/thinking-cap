@@ -77,6 +77,7 @@ export interface ResponseInputMessage {
 export interface StreamResponseOptions {
   model: string;
   effort?: string;
+  webSearch?: boolean;
   input: string | ResponseInputMessage[];
   instructions?: string;
   signal?: AbortSignal;
@@ -103,7 +104,7 @@ export interface ChatGPTClient {
   subscribe(listener: (session: SessionState) => void): () => void;
   /** Sign out of the selected profile. Its registration and identity remain saved. */
   disconnect(): Promise<void>;
-  streamResponse(options: StreamResponseOptions): Promise<{ text: string }>;
+  streamResponse(options: StreamResponseOptions): Promise<{ text: string; sources: {url:string;title:string}[]; searched:boolean }>;
 }
 
 export interface StoredCredentials {

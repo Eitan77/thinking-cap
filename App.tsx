@@ -31,6 +31,12 @@ function WebApp() {
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
+  const [webSearch, setWebSearch] = useState(true);
+  const [sources, setSources] = useState<{url:string;title:string}[]>([]);
+  const [searched, setSearched] = useState(false);
+  const [memoryNotes, setMemoryNotes] = useState('');
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authUrl, setAuthUrl] = useState('');
   const [authNotice, setAuthNotice] = useState('');
@@ -117,6 +123,7 @@ function WebApp() {
     controller.onError = setError;
     controller.onDecision = text => { setDecision(text); setNotice(text); };
     controller.onResult = (question, result, timing) => {
+      setSources(timing.sources || []); setSearched(timing.searched || false);
       setAnswer(result.kind === 'answer' ? result.text : result.kind === 'silent' ? 'No spoken answer — GPT returned SILENT.' : result.reason);
       setNotice(result.kind === 'answer' ? 'Answer received. Playing it now.' : result.kind === 'silent' ? 'GPT returned SILENT. Check what was heard and your instructions below.' : result.reason);
       setLastTiming(old => ({...old,gpt:timing.totalMs}));
@@ -149,9 +156,13 @@ function WebApp() {
         setAuthUrl(data.authUrl || '');
         if (data.authError && data.authError !== authErrorSeen.current) { setAuthNotice(data.authError); authErrorSeen.current = data.authError; }
         const key = data.session.status === 'connected' && data.session.sharing ? data.session.profileId || 'active' : '';
-        if (key && key !== loadedProfile.current) { loadedProfile.current = key; setAuthNotice(''); await loadModels(); }
+        if (key && key !== loadedProfile.current) {
+          loadedProfile.current = key; setAuthNotice(''); await loadModels();
+          try { const saved=await request('memory'); if(!disposed){setMemoryNotes(saved.notes);setMemoryEnabled(saved.enabled);} } catch(e) {if(!disposed)setError(message(e));}
+        }
         if (!key) {
           loadedProfile.current = ''; setModels([]); setModel(''); setEffort(''); ai.model = ''; ai.effort = '';
+          setMemoryNotes('');setMemoryEnabled(false);
           if (controller.mode !== 'off') stop();
         }
         const health = await request('health');
@@ -167,7 +178,7 @@ function WebApp() {
   }, []);
 
   async function auth(action: string, data: unknown = {}) {
-    stop(); setError(''); setAuthNotice(''); authErrorSeen.current = '';
+    stop(); setError(''); setAuthNotice(''); setTranscript(''); setAnswer(''); setSources([]); setSearched(false); authErrorSeen.current = '';
     if (action === 'signin') { setAuthBusy(true); setAuthNotice('Preparing your sign-in link…'); }
     try { await request(action, data); await pollRef.current(); }
     catch (e) { setAuthBusy(false); setAuthNotice(message(e)); }
@@ -230,7 +241,7 @@ function WebApp() {
   }
   function saveInstructions() {
     if (!script.trim()) { setNotice('Write some instructions or click Use default.'); return; }
-    stop(); controller.applyScript(script); setApplied(script); setScriptSaved(true); setAnswer(''); setTranscript('');
+    stop(); controller.applyScript(script); setApplied(script); setScriptSaved(true); setAnswer(''); setTranscript(''); setSources([]); setSearched(false);
     try { localStorage.setItem(SCRIPT_KEY, script); setNotice('Instructions saved on this browser and applied. Your next question will use them.'); }
     catch { setNotice('Instructions applied for this session. Browser storage is unavailable.'); }
   }
@@ -257,6 +268,15 @@ function WebApp() {
     setNotice('Reasoning effort saved. Start listening again when ready.');
   }
   const selectedModel = models.find(m => m.slug === model);
+  async function saveMemory(clear=false) {
+    if(!requireConnection())return;
+    stop();controller.clear();setMemoryBusy(true);setError('');
+    try{
+      const saved=await request('memory',{notes:clear?'':memoryNotes,enabled:clear?false:memoryEnabled});
+      setMemoryNotes(saved.notes);setMemoryEnabled(saved.enabled);
+      setNotice(clear?'Saved memory cleared for this account.':saved.enabled?'Memory saved. These notes will accompany your GPT questions.':'Memory saved but disabled. Notes will stay on this PC.');
+    }catch(e){setError(message(e));}finally{setMemoryBusy(false);}
+  }
   return <><style>{SETUP_CSS}</style><main>
     <header><h1>Thinking Cap</h1><p>Your Windows setup. Start at step 1.</p></header>
     <div className="servicebar"><span><i className={helperReady ? 'good' : ''} />App: {helperReady === null ? 'checking…' : helperReady ? 'running' : 'disconnected'}</span><span><i className={speechReady ? 'good' : ''} />Local speech: {speechReady ? 'ready' : 'starting…'}</span><button onClick={() => { setNotice('Checking the local app and speech service…'); void pollRef.current().then(() => setNotice('Status checked. See App and Local speech above.')); }}>Check connection</button></div>
@@ -282,11 +302,16 @@ function WebApp() {
     <section id="instructions" className="step"><div className="step-title"><b className="number">2</b><div><h2>Tell it how to respond</h2><p>Edit the script, or keep the default for short answers.</p></div><span className="badge">{script !== applied ? 'Changes not applied' : scriptSaved ? 'Saved' : 'Ready'}</span></div>
       <label htmlFor="script">Your instructions</label><textarea id="script" rows={6} value={script} maxLength={12000} onChange={e => { setScript(e.target.value); setScriptSaved(false); }} spellCheck={false} />
       <div className="actions"><button className="primary" onClick={saveInstructions}>Save instructions</button><button onClick={() => { setScript(DEFAULT_SCRIPT); setScriptSaved(false); setNotice('Default instructions loaded. Click Save instructions to apply them.'); }}>Use default</button></div><p className="hint">Saved only in this browser. Saving starts a fresh conversation. Every GPT request includes the applied script.</p>
+      <details><summary>Memory — facts to remember between sessions</summary><p className="hint">This is Thinking Cap’s memory for your connected account. It cannot read or sync existing ChatGPT memories. You can paste selected memories here. Only notes you save are retained; conversations and ambient speech are not automatically memorized.</p>
+        <label htmlFor="memory">Facts you want it to remember</label><textarea id="memory" rows={5} maxLength={6000} value={memoryNotes} onChange={e=>setMemoryNotes(e.target.value)} placeholder="For example: My preferred units are metric. My school is…" />
+        <label className="check"><input type="checkbox" checked={memoryEnabled} onChange={e=>setMemoryEnabled(e.target.checked)}/>Include saved notes in my GPT requests</label><div className="actions"><button disabled={memoryBusy} onClick={()=>void saveMemory()}>Save memory</button><button disabled={memoryBusy} onClick={()=>void saveMemory(true)}>Clear saved memory</button></div><p className="hint">Save applies both the notes and the switch. Stored encrypted on this PC, separately per connected account. Enabled notes are sent to GPT with each question.</p>
+      </details>
     </section>
 
     <section id="listen" className="step"><div className="step-title"><b className="number">3</b><div><h2>Ask something</h2><p>Try typing first, or choose how you want to listen.</p></div></div>
       {!canAsk && <div className="prerequisite">{connected ? 'Choose a model in step 1 to send questions.' : 'Connect ChatGPT in step 1 to get answers. Audio tests below work without it.'}</div>}
       <form onSubmit={sendTyped}><label htmlFor="question">Try a typed question</label><div className="inline"><input id="question" placeholder="What is 21 squared?" value={input} maxLength={4000} onChange={e => setInput(e.target.value)} /><button type="submit" className="primary">Send question</button></div></form>
+      <label className="check"><input type="checkbox" checked={webSearch} onChange={e=>{stop();setWebSearch(e.target.checked);ai.webSearch=e.target.checked;setNotice(e.target.checked?'Web lookup enabled. GPT can search for current information.':'Web lookup disabled. Current questions may return SILENT.');}}/>Allow web lookup for current information</label><p className="hint">Search can add latency. Source links appear when the provider supplies them. Uses this ChatGPT connection; no paid API fallback is enabled.</p>
       <div className="mode-grid" aria-label="Listening mode">{([{ id: 'off', name: 'Off', description: 'Microphone released.' }, { id: 'assistant', name: 'One question at a time', description: 'Click Speak once when ready.' }, { id: 'auto', name: 'Auto', description: 'Send each detected question.' }] as { id: Mode; name: string; description: string }[]).map(m => <button key={m.id} aria-pressed={mode === m.id} className={mode === m.id ? 'selected' : ''} onClick={() => void selectMode(m.id)}><strong>{m.name}</strong><small>{m.description}</small></button>)}</div>
       <div className="actions"><button className="primary" disabled={busy} onClick={() => armed ? (mic.sending = false, mic.command({ type: 'flush' }), setNotice('Finishing your question…')) : void speakOnce()}>{armed ? 'Finish & send' : busy ? 'Opening microphone…' : 'Speak once'}</button><button className="stop" onClick={() => { stop(); setNotice('Stopped. Microphone and audio are off.'); }}>Stop / mic off</button></div>
       <div className="listen-status" role="status"><i className={armed || mode === 'auto' || testingMic ? 'good' : ''} />{status}</div>
@@ -294,6 +319,7 @@ function WebApp() {
       {(lastTiming.stt !== undefined || lastTiming.gpt !== undefined) && <p className="hint">Pause {lastTiming.endpoint ?? '—'} ms · Transcription {lastTiming.stt ?? '—'} ms · GPT {lastTiming.gpt ?? '—'} ms · Voice {ttsMs ?? '—'} ms</p>}
       {mode === 'auto' && <p className="hint">Ask a question and pause. Auto uses everything this microphone hears; it doesn’t identify speakers. Listening pauses during spoken answers.</p>}
       <div className="output"><label>Heard</label><div>{transcript || 'Your words will appear here.'}</div><label>Answer</label><div className="answer" aria-live="polite">{answer || 'Your answer will appear here.'}</div></div>
+      {searched && <div className="hint">Web lookup used · {sources.length?sources.map((source,i)=><React.Fragment key={source.url}>{i>0?' · ':''}<a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></React.Fragment>):'The provider returned no source links for this lookup.'}</div>}
       <div className="actions"><button disabled={!transcript.trim()} onClick={() => { setInput(transcript); setNotice('Transcript copied into the question box. Edit it if needed, then Send question.'); document.getElementById('question')?.focus(); }}>Edit / resend heard text</button><button className="text-button" onClick={() => { stop(); controller.clear(); setTranscript(''); setAnswer(''); setDecision(''); setLastTiming({}); setLogs([]); setNotice('Conversation cleared. Your saved instructions are still applied.'); }}>Clear conversation</button></div>
     </section>
 
@@ -301,7 +327,7 @@ function WebApp() {
       <details><summary>Microphone & pause settings</summary><label htmlFor="mic">Microphone</label><select id="mic" value={device} onChange={e => { stop(); setDevice(e.target.value); setNotice('Microphone changed. Click Speak once, Auto, or Test microphone to use it.'); }}><option value="">Windows default input</option>{devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>)}</select><label htmlFor="silence">How long to wait after speech</label><select id="silence" value={silence} onChange={e => { stop(); setSilence(e.target.value); setNotice('Pause setting updated. Start listening again when ready.'); }}>{[500, 700, 1000, 1500].map(ms => <option key={ms} value={ms}>{ms} ms</option>)}</select><label htmlFor="sensitivity">Voice detection</label><select id="sensitivity" value={vadThreshold} onChange={e => { stop(); setVadThreshold(e.target.value); setNotice('Voice sensitivity updated. Start listening again when ready.'); }}><option value="0.35">Sensitive — better for quiet speech</option><option value="0.5">Normal — less background pickup</option></select><p className="hint">A longer pause helps if it cuts off the end of your question. Sensitive detection may pick up more background speech.</p></details>
     </section>
     <details className="debug"><summary>Debug details</summary><p className="hint">Speaker preparation: {ttsMs === null ? '—' : `${ttsMs} ms`}. Transcript and answer history is off by default.</p><label className="check"><input type="checkbox" checked={logging} onChange={e => { setLogging(e.target.checked); loggingRef.current = e.target.checked; if (!e.target.checked) setLogs([]); }} />Keep recent turns in this page</label><button onClick={() => setLogs([])}>Clear debug history</button>{logs.map((log, i) => <div className="turn" key={i}><p>{log.question}</p><strong>{log.answer}</strong><p className="hint">First token {log.first ?? '—'} ms · GPT complete {log.total} ms</p></div>)}</details>
-    <footer>Audio stays on this PC. Submitted questions, your script and recent answered turns go to GPT.</footer>
+    <footer>Audio stays on this PC. Questions, your script, enabled memory and recent answered turns go to GPT.</footer>
   </main></>;
 }
 export default function App() { return Platform.OS === 'web' ? <WebApp /> : <View><Text>The Windows demo runs in your PC browser.</Text></View>; }

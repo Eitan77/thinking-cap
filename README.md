@@ -42,7 +42,15 @@ Each request includes the current device-clock date/time formatted for the brows
 
 Instructions are stored in this browser's local storage only when Save instructions is clicked and restored on reload. Transcripts, answers and conversation history stay in page memory and disappear on reload. Recent debug turns are opt-in (maximum 30) and can be cleared. Clearing conversation clears debug turns and pending requests too; saved instructions remain applied. There is no persistent raw audio recording or transcript log. No personal script, token, audio model, or personal debug output belongs in Git.
 
-Only finalized submitted text, the applied instruction script, and bounded answered-turn context go to OpenAI. Audio is processed locally. No calendar, web-search tool, paid API fallback, wake phrase, iPhone audio, or external action integration is enabled.
+Only finalized submitted text, the applied instruction script, bounded answered-turn context, and explicitly enabled saved memory go to OpenAI. Audio is processed locally. No calendar, paid API fallback, wake phrase, iPhone audio, or external action integration is enabled.
+
+### Web lookup and personal memory
+
+**Allow web lookup for current information** enables the Responses `web_search` tool using your existing ChatGPT connection. GPT can search when a question needs changing public information. Search adds latency and is subject to account/model policy and plan limits. There is no automatic paid API fallback. The app shows whether search ran and displays source links returned by the service. Some lookups (including the tested finance lookup) can return no links; the UI says so explicitly. A successful search is not a guarantee that a market quote is real-time; inspect its timestamp.
+
+Under step 2, open **Memory — facts to remember between sessions**. Paste or type facts, enable **Include saved notes in my GPT requests**, then **Save memory**. Notes (up to 6000 characters) are encrypted with Windows DPAPI under `%LOCALAPPDATA%/ThinkingCap/memory`, separately for each connected profile. Disabled notes stay local. Clear saved memory replaces them with an empty, disabled record. Conversation clearing does not erase these separate notes. No ambient speech or conversation is automatically saved as memory.
+
+Sign in with ChatGPT does **not** expose existing personal ChatGPT memories or conversation history. This app has no automatic sync/import API for them. You can manually copy selected saved memories into the notes editor. The local memory feature does not change your ChatGPT account's own memories.
 
 OAuth tokens and account labels live under `%LOCALAPPDATA%/ThinkingCap/chatgpt`, outside the repository, encrypted with **Windows DPAPI CurrentUser**. The official DevKit handles PKCE, nonce/state checking, token validation, refresh and disconnect. Tokens never go to the browser. Sign-out removes local tokens and attempts remote revocation; check ChatGPT settings if it reports a revocation failure. User scripts are not a security boundary for model behavior.
 

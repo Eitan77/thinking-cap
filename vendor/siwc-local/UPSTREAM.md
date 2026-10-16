@@ -2,6 +2,7 @@ Official OpenAI Sign in with ChatGPT DevKit local SDK, with the following local 
 
 - Preserve account-catalog supported/default reasoning efforts.
 - Forward an explicitly selected reasoning effort in Responses requests.
+- Optionally enable web search and return search usage and source annotations.
 
 OAuth, encrypted storage, refresh, and stream validation are unchanged.
 

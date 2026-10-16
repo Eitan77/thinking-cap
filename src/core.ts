@@ -24,7 +24,7 @@ export function validateAnswer(raw:string):{kind:'answer';text:string}|{kind:'si
   return {kind:'answer',text};
 }
 export type Message = {role:'user'|'assistant';content:string};
-export type Result = {text:string;firstTokenMs:number|null;totalMs:number};
+export type Result = {text:string;firstTokenMs:number|null;totalMs:number;sources?:{url:string;title:string}[];searched?:boolean};
 export type Turn = {id:string;question:string;script:string;history:Message[]};
 export interface AIProvider { ask(turn:Turn, signal:AbortSignal):Promise<Result> }
 export interface Speaker { speak(text:string,signal:AbortSignal):Promise<void>; stop():void }

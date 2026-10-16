@@ -7,7 +7,8 @@ export async function request(path:string,data?:unknown,signal?:AbortSignal){
 export class WindowsAI implements AIProvider {
   model='';
   effort='';
-  ask(turn:Turn,signal:AbortSignal){if(!this.model)throw new Error('Connect ChatGPT and select a model first.');return request('ask',{...turn,model:this.model,effort:this.effort,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},signal);}
+  webSearch=true;
+  ask(turn:Turn,signal:AbortSignal){if(!this.model)throw new Error('Connect ChatGPT and select a model first.');return request('ask',{...turn,model:this.model,effort:this.effort,webSearch:this.webSearch,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},signal);}
 }
 export class WindowsSpeaker implements Speaker {
   private audio?:HTMLAudioElement; private url?:string; private finish?:()=>void;
