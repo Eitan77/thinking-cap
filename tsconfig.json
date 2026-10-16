@@ -1,0 +1,5 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {"strict":true,"noEmit":true,"types":["node","react"],"lib":["ES2022","DOM"]},
+  "include":["App.tsx","src/**/*.ts","src/**/*.tsx","server/**/*.ts","tests/**/*.ts","vendor/siwc-local/src/**/*.ts"]
+}

@@ -1,0 +1,35 @@
+{
+  "name": "thinking-cap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "expo start --web --localhost",
+    "build": "expo export --platform web",
+    "server": "tsx server/index.ts",
+    "start": "tsx server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "expo": "~54.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-web": "^0.21.0",
+    "react-dom": "19.1.0",
+    "@expo/metro-runtime": "~6.1.0",
+    "jose": "^6.1.0",
+    "openai": "^7.21.0",
+    "proper-lockfile": "^4.1.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "tsx": "^4.20.6",
+    "@types/react": "~19.1.10",
+    "@types/node": "^22.18.0",
+    "@types/ws": "^8.18.1",
+    "@types/proper-lockfile": "^4.1.4"
+  }
+}
