@@ -1,7 +1,7 @@
 import type {AIProvider,Speaker,TranscriptEvent,Turn} from './core';
 export const API = typeof location!=='undefined'&&location.port==='8081'?'http://127.0.0.1:4317':'';
 export async function request(path:string,data?:unknown,signal?:AbortSignal){
-  const response=await fetch(API+'/api/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),signal});
+  const response=await fetch(API+'/api/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),signal:signal??AbortSignal.timeout(20000)});
   const result=await response.json();if(!response.ok)throw new Error(result.error??'Local helper request failed.');return result;
 }
 export class WindowsAI implements AIProvider {

@@ -17,11 +17,11 @@ await mkdir(storageDir,{recursive:true});
 const chatgpt=createChatGPT({appName:'Thinking Cap',appId:'thinking-cap',redirectPort:0,storageDir,sendHostId:true,credentialEncryption:encryption,
   openBrowser(url){
     if(new URL(url).origin!=='https://auth.openai.com')throw new Error('Unexpected authorization destination.');
-    const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command','Start-Process -FilePath $input'],{windowsHide:true,stdio:['pipe','ignore','ignore']});
-    child.stdin.end(url);child.on('error',()=>{authError='Could not open the sign-in browser.';});
+    // Present the URL in the app so browser-launch failures cannot strand sign-in.
+    authUrl=url;
   }
 });
-let authBusy=false, authError='';
+let authBusy=false, authError='', authUrl='';
 function safeError(e:unknown){return e instanceof ChatGPTError?`${e.code}: ${e.message}`:e instanceof Error&&e.message.startsWith('Windows ')?e.message:'Operation failed. Check the local services and try again.';}
 function json(res:ServerResponse,status:number,body:unknown){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(body));}
 async function body(req:IncomingMessage){let text='';for await(const chunk of req){text+=chunk;if(text.length>64000)throw new Error('Request too large');}return JSON.parse(text||'{}');}
@@ -38,14 +38,14 @@ const server=createServer(async(req,res)=>{
     if(path.startsWith('/api/')){
       if(!['GET','POST'].includes(req.method??'')){json(res,405,{error:'Method not allowed'});return;}
       if(req.method==='POST'&&(!requestOrigin||!req.headers['content-type']?.startsWith('application/json'))){json(res,403,{error:'Use the app to perform this action.'});return;}
-      if(path==='/api/session'&&req.method==='GET'){json(res,200,{session:await chatgpt.getSession(),profiles:await chatgpt.listProfiles(),authBusy,authError});return;}
+      if(path==='/api/session'&&req.method==='GET'){json(res,200,{session:await chatgpt.getSession(),profiles:await chatgpt.listProfiles(),authBusy,authError,authUrl});return;}
       if(path==='/api/signin'&&req.method==='POST'){
         const data=await body(req);if(authBusy){json(res,409,{error:'Sign-in already running.'});return;}
-        authBusy=true;authError='';
-        void chatgpt.signIn({newProfile:data.newProfile===true,reconsent:data.reconsent===true}).catch(e=>{authError=e instanceof ChatGPTError&&e.code==='cancelled'?'':safeError(e);}).finally(()=>{authBusy=false;});
+        authBusy=true;authError='';authUrl='';
+        void chatgpt.signIn({newProfile:data.newProfile===true,reconsent:data.reconsent===true}).catch(e=>{authError=e instanceof ChatGPTError&&e.code==='cancelled'?'':safeError(e);}).finally(()=>{authBusy=false;authUrl='';});
         json(res,202,{started:true});return;
       }
-      if(path==='/api/cancel-signin'&&req.method==='POST'){chatgpt.cancelSignIn();json(res,200,{ok:true});return;}
+      if(path==='/api/cancel-signin'&&req.method==='POST'){chatgpt.cancelSignIn();authUrl='';authError='';json(res,200,{ok:true});return;}
       if(path==='/api/profile'&&req.method==='POST'){const data=await body(req);json(res,200,await chatgpt.selectProfile(String(data.id)));return;}
       if(path==='/api/signout'&&req.method==='POST'){await chatgpt.disconnect();json(res,200,{ok:true});return;}
       if(path==='/api/models'&&req.method==='GET'){json(res,200,await chatgpt.listModels());return;}
