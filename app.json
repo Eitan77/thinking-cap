@@ -1,1 +1,1 @@
-{"expo":{"name":"Thinking Cap","slug":"thinking-cap","version":"1.0.0","platforms":["web","ios"],"web":{"bundler":"metro","output":"single"},"ios":{"bundleIdentifier":"com.thinkingcap.app"}}}
+{"expo":{"name":"Thinking Cap","slug":"thinking-cap","version":"2.0.0","platforms":["web","ios"],"web":{"bundler":"metro","output":"single"},"ios":{"bundleIdentifier":"com.thinkingcap.app"}}}

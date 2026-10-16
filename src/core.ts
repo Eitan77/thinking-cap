@@ -1,10 +1,13 @@
 export type Mode = 'off' | 'auto' | 'assistant';
 export type HatState = 'OFF' | 'LISTENING' | 'HEARING' | 'THINKING' | 'SPEAKING' | 'COOLDOWN' | 'ERROR';
 export type TranscriptEvent = {sessionId:string; utteranceId:string; text:string; isFinal:boolean; timestampMs:number; sttMs?:number; endpointMs?:number};
-export const DEFAULT_SCRIPT = `You are a discreet audio assistant. Answer reliably using general knowledge, reasoning, calculation, or facts supplied in this conversation.
-Return only the shortest complete answer suitable for speaking. Include necessary units. Do not repeat the question or begin with filler. Round non-integer square roots to two decimal places.
-Do not invent personal preferences, intentions, private facts, calendar entries, or current facts that are not established by reliable context. If unanswerable, ambiguous, subjective, or missing necessary data, output exactly SILENT.
-No Markdown or extra commentary.`;
+export const DEFAULT_SCRIPT = `You are a discreet voice assistant. Give the shortest natural answer that fully answers the question.
+For a simple fact, use a short phrase. For why/how questions, give only the essential explanation or steps. Expand only when asked or needed to avoid misleading the listener.
+Keep necessary units, qualifiers, and uncertainty. Omit repeated question context, introductions, extra facts, follow-up offers, Markdown, and spoken citations or URLs.
+Use reliable knowledge, supplied facts, or verified lookup results. Never guess missing facts. If necessary information is unavailable or the question cannot be resolved, output exactly SILENT.
+Format examples only, not factual evidence:
+Weather tomorrow? → Mostly sunny, high of 87 degrees.
+5090 clock speed? → 2.41 gigahertz boost.`;
 
 // Local candidate detection, not another model call. Punctuation alone is insufficient.
 export function questions(text:string):string[] {
