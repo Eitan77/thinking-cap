@@ -58,7 +58,7 @@ function WebApp() {
   const [silence, setSilence] = useState('500');
   const [vadThreshold, setVadThreshold] = useState('0.35');
   const [decision, setDecision] = useState('');
-  const [lastTiming, setLastTiming] = useState<{endpoint?:number;stt?:number;gpt?:number}>({});
+  const [lastTiming, setLastTiming] = useState<{endpoint?:number;stt?:number;gpt?:number;local?:boolean}>({});
   const [logging, setLogging] = useState(false);
   const [logs, setLogs] = useState<Log[]>([]);
   const [ttsMs, setTtsMs] = useState<number | null>(null);
@@ -125,9 +125,9 @@ function WebApp() {
     controller.onResult = (question, result, timing) => {
       setSources(timing.sources || []); setSearched(timing.searched || false);
       setAnswer(result.kind === 'answer' ? result.text : result.kind === 'silent' ? 'No spoken answer — GPT returned SILENT.' : result.reason);
-      setNotice(result.kind === 'answer' ? 'Answer received. Playing it now.' : result.kind === 'silent' ? 'GPT returned SILENT. Check what was heard and your instructions below.' : result.reason);
-      setLastTiming(old => ({...old,gpt:timing.totalMs}));
-      setDecision(result.kind === 'silent' ? 'GPT chose SILENT. Check the transcript or adjust your instructions.' : result.kind === 'answer' ? 'Answer received.' : result.reason);
+      setNotice(result.kind === 'answer' ? timing.local ? 'Calculated locally. Playing the number now.' : 'Answer received. Playing it now.' : result.kind === 'silent' ? 'GPT returned SILENT. Check what was heard and your instructions below.' : result.reason);
+      setLastTiming(old => ({...old,gpt:timing.totalMs,local:timing.local}));
+      setDecision(result.kind === 'silent' ? 'GPT chose SILENT. Check the transcript or adjust your instructions.' : result.kind === 'answer' ? timing.local ? 'Calculated locally.' : 'Answer received.' : result.reason);
       if (loggingRef.current) setLogs(old => [{ question, answer: timing.text, total: timing.totalMs, first: timing.firstTokenMs }, ...old].slice(0, 30));
     };
     speaker.onSound = setTtsMs;
@@ -316,7 +316,7 @@ function WebApp() {
       <div className="actions"><button className="primary" disabled={busy} onClick={() => armed ? (mic.sending = false, mic.command({ type: 'flush' }), setNotice('Finishing your question…')) : void speakOnce()}>{armed ? 'Finish & send' : busy ? 'Opening microphone…' : 'Speak once'}</button><button className="stop" onClick={() => { stop(); setNotice('Stopped. Microphone and audio are off.'); }}>Stop / mic off</button></div>
       <div className="listen-status" role="status"><i className={armed || mode === 'auto' || testingMic ? 'good' : ''} />{status}</div>
       {decision && <p className="hint" role="status">{decision}</p>}
-      {(lastTiming.stt !== undefined || lastTiming.gpt !== undefined) && <p className="hint">Pause {lastTiming.endpoint ?? '—'} ms · Transcription {lastTiming.stt ?? '—'} ms · GPT {lastTiming.gpt ?? '—'} ms · Voice {ttsMs ?? '—'} ms</p>}
+      {(lastTiming.stt !== undefined || lastTiming.gpt !== undefined) && <p className="hint">Pause {lastTiming.endpoint ?? '—'} ms · Transcription {lastTiming.stt ?? '—'} ms · {lastTiming.local ? 'Local math' : 'GPT'} {lastTiming.gpt ?? '—'} ms · Voice {ttsMs ?? '—'} ms</p>}
       {mode === 'auto' && <p className="hint">Ask a question and pause. Auto uses everything this microphone hears; it doesn’t identify speakers. Listening pauses during spoken answers.</p>}
       <div className="output"><label>Heard</label><div>{transcript || 'Your words will appear here.'}</div><label>Answer</label><div className="answer" aria-live="polite">{answer || 'Your answer will appear here.'}</div></div>
       {searched && <div className="hint">Web lookup used · {sources.length?sources.map((source,i)=><React.Fragment key={source.url}>{i>0?' · ':''}<a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></React.Fragment>):'The provider returned no source links for this lookup.'}</div>}
@@ -327,7 +327,7 @@ function WebApp() {
       <details><summary>Microphone & pause settings</summary><label htmlFor="mic">Microphone</label><select id="mic" value={device} onChange={e => { stop(); setDevice(e.target.value); setNotice('Microphone changed. Click Speak once, Auto, or Test microphone to use it.'); }}><option value="">Windows default input</option>{devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>)}</select><label htmlFor="silence">How long to wait after speech</label><select id="silence" value={silence} onChange={e => { stop(); setSilence(e.target.value); setNotice('Pause setting updated. Start listening again when ready.'); }}>{[500, 700, 1000, 1500].map(ms => <option key={ms} value={ms}>{ms} ms</option>)}</select><label htmlFor="sensitivity">Voice detection</label><select id="sensitivity" value={vadThreshold} onChange={e => { stop(); setVadThreshold(e.target.value); setNotice('Voice sensitivity updated. Start listening again when ready.'); }}><option value="0.35">Sensitive — better for quiet speech</option><option value="0.5">Normal — less background pickup</option></select><p className="hint">A longer pause helps if it cuts off the end of your question. Sensitive detection may pick up more background speech.</p></details>
     </section>
     <details className="debug"><summary>Debug details</summary><p className="hint">Speaker preparation: {ttsMs === null ? '—' : `${ttsMs} ms`}. Transcript and answer history is off by default.</p><label className="check"><input type="checkbox" checked={logging} onChange={e => { setLogging(e.target.checked); loggingRef.current = e.target.checked; if (!e.target.checked) setLogs([]); }} />Keep recent turns in this page</label><button onClick={() => setLogs([])}>Clear debug history</button>{logs.map((log, i) => <div className="turn" key={i}><p>{log.question}</p><strong>{log.answer}</strong><p className="hint">First token {log.first ?? '—'} ms · GPT complete {log.total} ms</p></div>)}</details>
-    <footer>Audio stays on this PC. Questions, your script, enabled memory and recent answered turns go to GPT.</footer>
+    <footer>Basic math is calculated on this PC and returns only the number. Other questions, your script, enabled memory and recent answered turns go to GPT. Audio stays on this PC.</footer>
   </main></>;
 }
 export default function App() { return Platform.OS === 'web' ? <WebApp /> : <View><Text>The Windows demo runs in your PC browser.</Text></View>; }

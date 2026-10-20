@@ -67,6 +67,8 @@ The Node helper binds to `127.0.0.1:4317`. Its HTTP and WebSocket interfaces val
 
 ## Development and checks
 
+Basic arithmetic runs immediately in the browser, bypassing GPT and web lookup, and displays/speaks only the number. Supports spoken English numbers, parentheses, arithmetic, powers, square/cube roots, percentages, fractions, and mixed numbers. Examples include `three over five`, `two and a half plus three quarters`, `subtract three from ten`, `2 to the third power`, and `20 percent off 50`. Common typos such as `squre root` and `devided by` also work. Simple word problems with explicit quantities are supported: `If I have five apples and get three more, how many apples do I have?`, `3 apples cost $2 each, what is the total cost?`, and equal sharing among people. Arbitrary wording, multi-step stories, and ambiguous questions continue to GPT. Local answers join conversation history for follow-up questions. Decimal results use up to 15 significant digits; non-finite results and values beyond JavaScript's safe integer range fall back to GPT.
+
 ```powershell
 pnpm typecheck
 pnpm test

@@ -1,3 +1,5 @@
+import {localMath} from './math';
+
 export type Mode = 'off' | 'auto' | 'assistant';
 export type HatState = 'OFF' | 'LISTENING' | 'HEARING' | 'THINKING' | 'SPEAKING' | 'COOLDOWN' | 'ERROR';
 export type TranscriptEvent = {sessionId:string; utteranceId:string; text:string; isFinal:boolean; timestampMs:number; sttMs?:number; endpointMs?:number};
@@ -15,7 +17,7 @@ export function questions(text:string):string[] {
   return parts.map(x => x.trim()).filter(x => {
     if (!x || /(?:\b(?:of|the|a|an|to|and|or|but|with|about|from|what|which|whose|where)|\.\.\.)\s*\??$/i.test(x)) return false;
     const opening = x.replace(/^(?:(?:hey(?: (?:thinking )?cap)?|okay|ok|so|please|um|uh|well|wait|actually|alright|all right|right|now)[,!.\s]+)+/i,'');
-    return /\?$/.test(x) || /^(?:who|what|when|where|why|how|which|whose|whom|is|are|am|was|were|do|does|did|can|could|would|will|should|has|have|had|tell me|calculate|compute|explain|give me)\b/i.test(opening)
+    return localMath(x)!==null || /\?$/.test(x) || /^(?:who|what|when|where|why|how|which|whose|whom|is|are|am|was|were|do|does|did|can|could|would|will|should|has|have|had|tell me|calculate|compute|explain|give me)\b/i.test(opening)
       || /\b(?:i (?:wonder|was wondering)|does anyone know|do you know|can you tell me)\b.*\b(?:who|what|when|where|why|how|which)\b/i.test(opening)
       || /(?:[.!]\s+|\b(?:quick question|question is|hey cap)[,:]?\s+)(?:what|how|who|where|when|why|can|could|is|are)\b/i.test(opening);
   });
@@ -27,7 +29,7 @@ export function validateAnswer(raw:string):{kind:'answer';text:string}|{kind:'si
   return {kind:'answer',text};
 }
 export type Message = {role:'user'|'assistant';content:string};
-export type Result = {text:string;firstTokenMs:number|null;totalMs:number;sources?:{url:string;title:string}[];searched?:boolean};
+export type Result = {text:string;firstTokenMs:number|null;totalMs:number;sources?:{url:string;title:string}[];searched?:boolean;local?:boolean};
 export type Turn = {id:string;question:string;script:string;history:Message[]};
 export interface AIProvider { ask(turn:Turn, signal:AbortSignal):Promise<Result> }
 export interface Speaker { speak(text:string,signal:AbortSignal):Promise<void>; stop():void }
@@ -75,7 +77,10 @@ export class Controller {
         const ac=new AbortController(); this.active=ac;
         try {
           this.set('THINKING');
-          const timing=await this.ai.ask({...item,script:this.script,history:[...this.history]},ac.signal);
+          const started=performance.now();
+          const number=localMath(item.question);
+          const timing:Result=number===null?await this.ai.ask({...item,script:this.script,history:[...this.history]},ac.signal)
+            :{text:number,firstTokenMs:0,totalMs:Math.round(performance.now()-started),local:true};
           if(ac.signal.aborted||epoch!==this.epoch)continue;
           const result=validateAnswer(timing.text); this.onResult(item.question,result,timing);
           if(result.kind==='error')throw new Error(result.reason);

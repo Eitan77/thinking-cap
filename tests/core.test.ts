@@ -21,15 +21,43 @@ test('only exact SILENT is silent; malformed output never speaks',()=>{
   assert.deepEqual(validateAnswer('21.93'),{kind:'answer',text:'21.93'});
 });
 test('off and partial revisions never request; one final ID only submits once',async()=>{
-  const{c,turns}=fixture();c.transcript(event('What is two plus two?'));assert.equal(turns.length,0);
+  const{c,turns}=fixture();c.transcript(event('What is the capital of Japan?'));assert.equal(turns.length,0);
   c.setMode('auto');c.transcript(event('What is two', 'u1',false));assert.equal(turns.length,0);
-  c.transcript(event('What is two plus two?'));c.transcript(event('What is two plus two?'));await wait();assert.equal(turns.length,1);
+  c.transcript(event('What is the capital of Japan?'));c.transcript(event('What is the capital of Japan?'));await wait();assert.equal(turns.length,1);
 });
 test('real repeated questions in distinct utterances are submitted separately',async()=>{
-  const{c,turns}=fixture();c.setMode('auto');c.transcript(event('What is two plus two?','1'));c.transcript(event('What is two plus two?','2'));await wait();assert.equal(turns.length,2);
+  const{c,turns}=fixture();c.setMode('auto');c.transcript(event('What is the capital of Japan?','1'));c.transcript(event('What is the capital of Japan?','2'));await wait();assert.equal(turns.length,2);
+});
+
+test('spoken and typed math bypass GPT and speak only the number',async()=>{
+  const{c,turns,spoken}=fixture();const results:Result[]=[];
+  c.onResult=(_question,_result,timing)=>results.push(timing);
+  c.setMode('auto');c.transcript(event('twenty one squared','1'));
+  c.transcript(event('twenty one squared','1'));
+  await wait();assert.deepEqual(spoken,['441']);assert.equal(turns.length,0);
+  assert.equal(results[0].local,true);assert.equal(results[0].text,'441');
+  c.setMode('off');c.setMode('assistant');c.manual('20% of 50');
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.deepEqual(spoken,['441','10']);assert.equal(turns.length,0);
+  assert.deepEqual(c.history.slice(-2),[{role:'user',content:'20% of 50'},{role:'assistant',content:'10'}]);
+  c.setMode('off');
 });
 test('subjective questions still reach GPT once, silence produces no TTS',async()=>{
   const{c,turns,spoken}=fixture();c.setMode('auto');c.transcript(event('What do I want for lunch?'));await wait();assert.equal(turns.length,1);assert.equal(spoken.length,0);
+});
+
+test('expanded spoken math is detected in auto mode and never calls GPT',async()=>{
+  const{c,turns,spoken}=fixture();
+  for(const [question,expected] of [
+    ['two and a half plus three quarters','3.25'],
+    ['squre root of eighty one','9'],
+    ['subtract four from ten','6'],
+    ['If I have five apples and get three more, how many apples do I have?','8']
+  ]) {
+    c.setMode('auto');c.transcript(event(question,question));await wait();
+    assert.equal(spoken.at(-1),expected,question);assert.equal(turns.length,0);
+    c.setMode('off');
+  }
 });
 test('button turn submits activated statements, ignores unactivated finals',async()=>{
   const{c,turns}=fixture();c.setMode('assistant');c.transcript(event('Explain gravity','1'));c.transcript(event('Explain gravity','2'),true);await wait();assert.equal(turns.length,1);
