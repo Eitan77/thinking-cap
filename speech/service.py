@@ -20,10 +20,12 @@ from piper import PiperVoice
 from silero_vad import load_silero_vad
 
 ROOT = Path(__file__).resolve().parents[1]
+WHISPER_MODEL = os.environ.get('THINKING_CAP_WHISPER_MODEL', 'base.en')
 KEY = os.environ.get('THINKING_CAP_SPEECH_KEY')
 if not KEY:
     raise RuntimeError('Start speech through the Thinking Cap helper.')
 model = None
+recognizers = {}
 voice = None
 ready = False
 failure = None
@@ -31,11 +33,16 @@ inference_lock = asyncio.Lock()
 voice_lock = asyncio.Lock()
 
 
+def load_recognizer(name):
+    return WhisperModel(name, device='cpu', compute_type='int8', cpu_threads=max(2, min(4, os.cpu_count() or 2)), num_workers=1, download_root=str(ROOT / '.local/models/whisper'))
+
+
 def load_models():
     global model, voice, ready, failure
     try:
         torch.set_num_threads(1)
-        model = WhisperModel(os.environ.get('THINKING_CAP_WHISPER_MODEL', 'base.en'), device='cpu', compute_type='int8', cpu_threads=max(2, min(4, os.cpu_count() or 2)), num_workers=1, download_root=str(ROOT / '.local/models/whisper'))
+        model = load_recognizer(WHISPER_MODEL)
+        recognizers[WHISPER_MODEL] = model
         voice = PiperVoice.load(str(ROOT / '.local/models/en_US-lessac-medium.onnx'))
         # Warm the ONNX VAD cache before accepting microphone connections.
         load_silero_vad(onnx=True)
@@ -64,7 +71,29 @@ def authorize(headers):
 @app.get('/health')
 async def health(request: Request):
     authorize(request.headers)
-    return {'ready': ready, 'error': failure, 'stt': 'faster-whisper base.en / CPU int8', 'tts': 'Piper lessac', 'vad': 'Silero ONNX'}
+    return {'ready': ready, 'error': failure, 'recognitionMode': 'fast' if WHISPER_MODEL == 'tiny.en' else 'quality', 'stt': f'faster-whisper {WHISPER_MODEL} / CPU int8', 'tts': 'Piper lessac', 'vad': 'Silero ONNX'}
+
+
+@app.post('/recognition-mode')
+async def recognition_mode(request: Request):
+    global model, WHISPER_MODEL
+    authorize(request.headers)
+    data = await request.json()
+    name = {'fast': 'tiny.en', 'quality': 'base.en'}.get(data.get('mode'))
+    if name is None:
+        raise HTTPException(400, 'Choose Fast or Quality recognition.')
+    if not ready:
+        raise HTTPException(503, 'Wait for local speech to finish starting.')
+    # Use the same lock as transcription so the active recognizer cannot change mid-job.
+    async with inference_lock:
+        if name not in recognizers:
+            try:
+                recognizers[name] = await asyncio.to_thread(load_recognizer, name)
+            except Exception:
+                raise HTTPException(503, 'Could not load the recognizer. Previous mode is still active.')
+        model = recognizers[name]
+        WHISPER_MODEL = name
+    return await health(request)
 
 
 @app.post('/tts')

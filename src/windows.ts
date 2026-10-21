@@ -12,6 +12,11 @@ export class WindowsAI implements AIProvider {
 }
 export class WindowsSpeaker implements Speaker {
   private audio?:HTMLAudioElement; private url?:string; private finish?:()=>void;
+  private rate=1;
+  setSpeed(rate:number){
+    this.rate=Number.isFinite(rate)?Math.max(0.5,Math.min(2,rate)):1;
+    if(this.audio)this.audio.playbackRate=this.rate;
+  }
   onSound:(ms:number)=>void=()=>{};
   stop(){this.audio?.pause();this.finish?.();this.finish=undefined;this.audio=undefined;if(this.url)URL.revokeObjectURL(this.url);this.url=undefined;}
   async speak(text:string,signal:AbortSignal){
@@ -20,6 +25,7 @@ export class WindowsSpeaker implements Speaker {
     if(!response.ok)throw new Error('Local TTS failed. Check speech service status.');
     const blob=await response.blob();if(signal.aborted)return;
     this.url=URL.createObjectURL(blob);const audio=new Audio(this.url);this.audio=audio;
+    audio.preservesPitch=true;audio.playbackRate=this.rate;
     await new Promise<void>((resolve,reject)=>{
       const cleanup=()=>{signal.removeEventListener('abort',abort);this.finish=undefined;};
       const done=()=>{cleanup();resolve();};const abort=()=>{audio.pause();done();};

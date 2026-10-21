@@ -8,6 +8,10 @@ type Session = { status: string; sharing: boolean; profileId?: string; identity?
 type Model = { slug: string; displayName: string; supportedEfforts: string[]; defaultEffort?: string };
 type Log = { question: string; answer: string; total: number; first: number | null };
 const SCRIPT_KEY = 'thinking-cap-instructions';
+const VOICE_SPEED_KEY = 'thinking-cap-voice-speed';
+function savedVoiceSpeed() {
+  try { const rate = Number(localStorage.getItem(VOICE_SPEED_KEY)); return Number.isFinite(rate) && rate >= 0.5 && rate <= 2 ? rate : 1; } catch { return 1; }
+}
 function savedScript() {
   try { return localStorage.getItem(SCRIPT_KEY) || DEFAULT_SCRIPT; } catch { return DEFAULT_SCRIPT; }
 }
@@ -43,6 +47,8 @@ function WebApp() {
   const [helperReady, setHelperReady] = useState<boolean | null>(null);
   const [speechReady, setSpeechReady] = useState(false);
   const [speechError, setSpeechError] = useState('');
+  const [recognitionMode, setRecognitionMode] = useState<'fast' | 'quality'>('quality');
+  const [recognitionSwitching, setRecognitionSwitching] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [transcript, setTranscript] = useState('');
@@ -62,6 +68,7 @@ function WebApp() {
   const [logging, setLogging] = useState(false);
   const [logs, setLogs] = useState<Log[]>([]);
   const [ttsMs, setTtsMs] = useState<number | null>(null);
+  const [voiceSpeed, setVoiceSpeed] = useState(savedVoiceSpeed);
   const generation = useRef(0);
   const armedRef = useRef(false);
   const testingRef = useRef(false);
@@ -94,6 +101,7 @@ function WebApp() {
   }
   function jump(id: string) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   function requireConnection() {
+    if (recognitionSwitching) { setNotice('Wait for recognition mode to finish switching.'); return false; }
     if (helperReady !== true) { setError('The local app is disconnected. Click Check connection below, or restart scripts/start.ps1.'); return false; }
     if (!connected) { setNotice('First connect ChatGPT in step 1. You can test your microphone and speakers without signing in.'); jump('connect'); return false; }
     if (!model) { setNotice('Your model list hasn’t loaded. In step 1, click Retry model list.'); jump('connect'); return false; }
@@ -112,6 +120,7 @@ function WebApp() {
       if (!list.length) setAuthNotice('Your account returned no available models. Check plan access or reconnect.');
     } catch (e) { setAuthNotice(message(e)); }
   }
+  useEffect(() => { speaker.setSpeed(voiceSpeed); }, [speaker, voiceSpeed]);
   useEffect(() => {
     controller.applyScript(savedScript());
     controller.onState = s => {
@@ -166,7 +175,7 @@ function WebApp() {
           if (controller.mode !== 'off') stop();
         }
         const health = await request('health');
-        if (!disposed) { setSpeechReady(health.ready); setSpeechError(health.error || ''); }
+        if (!disposed) { setSpeechReady(health.ready); setSpeechError(health.error || ''); if (health.recognitionMode) setRecognitionMode(health.recognitionMode); }
       } catch {
         if (!disposed) { setHelperReady(false); setSpeechReady(false); if (controller.mode !== 'off' || testingRef.current) stop(); }
       } finally { polling = false; }
@@ -182,6 +191,17 @@ function WebApp() {
     if (action === 'signin') { setAuthBusy(true); setAuthNotice('Preparing your sign-in link…'); }
     try { await request(action, data); await pollRef.current(); }
     catch (e) { setAuthBusy(false); setAuthNotice(message(e)); }
+  }
+  async function changeRecognitionMode(next: 'fast' | 'quality') {
+    if (recognitionSwitching || next === recognitionMode) return;
+    stop(); setRecognitionSwitching(true); setError('');
+    setNotice(`Loading ${next === 'fast' ? 'Fast' : 'Quality'} recognition… First use may download the model.`);
+    try {
+      const health = await request('recognition-mode', {mode:next}, AbortSignal.timeout(190000));
+      setRecognitionMode(health.recognitionMode); setSpeechReady(health.ready);
+      setNotice(`${next === 'fast' ? 'Fast' : 'Quality'} recognition ready. Start listening again when ready.`);
+    } catch (e) { setError(message(e)); }
+    finally { setRecognitionSwitching(false); }
   }
   async function refreshDevices() {
     setDevices((await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput'));
@@ -217,6 +237,7 @@ function WebApp() {
     finally { if (epoch === generation.current) setBusy(false); }
   }
   async function testMic() {
+    if (recognitionSwitching) return;
     if (testingRef.current) { stop(); setNotice('Microphone test stopped. Nothing was sent to GPT.'); return; }
     if (!speechReady) { setError('Local speech is still starting. Click Check connection and try again when it says Ready.'); return; }
     stop(); setBusy(true); setError(''); setTranscript('');
@@ -323,7 +344,10 @@ function WebApp() {
       <div className="actions"><button disabled={!transcript.trim()} onClick={() => { setInput(transcript); setNotice('Transcript copied into the question box. Edit it if needed, then Send question.'); document.getElementById('question')?.focus(); }}>Edit / resend heard text</button><button className="text-button" onClick={() => { stop(); controller.clear(); setTranscript(''); setAnswer(''); setDecision(''); setLastTiming({}); setLogs([]); setNotice('Conversation cleared. Your saved instructions are still applied.'); }}>Clear conversation</button></div>
     </section>
 
-    <section className="step audio"><h2>Check your audio</h2><p>These tests work before signing in. Nothing is sent to GPT.</p><div className="actions"><button disabled={busy} onClick={() => void testSound()}>{testingSound ? 'Restart speaker test' : 'Test speakers'}</button><button disabled={busy} onClick={() => void testMic()}>{testingMic ? 'Stop microphone test' : 'Test microphone'}</button></div>{testingMic && <p className="hint">Say a sentence. The transcript appears in “Heard” above. Test ends after 15 seconds.</p>}{speechError && <p className="hint">{speechError}</p>}<p className="hint">Sound uses your Windows default speakers or headphones.</p>
+    <section className="step audio"><h2>Check your audio</h2><p>These tests work before signing in. Nothing is sent to GPT.</p>
+      <div className="voice-speed"><label htmlFor="voice-speed">Output voice speed · {voiceSpeed.toFixed(1)}×{voiceSpeed === 1 ? ' (Normal)' : ''}</label><input id="voice-speed" type="range" min="0.5" max="2" step="0.1" value={voiceSpeed} aria-valuetext={`${voiceSpeed.toFixed(1)} times normal speed`} onChange={e => { const rate = Number(e.target.value); speaker.setSpeed(rate); setVoiceSpeed(rate); try { localStorage.setItem(VOICE_SPEED_KEY, String(rate)); } catch {} }} /><div className="speed-labels"><span>Slower · 0.5×</span><span>Faster · 2×</span></div></div>
+      <fieldset className="recognition"><legend>Speech recognition</legend><div className="actions">{(['fast','quality'] as const).map(choice => <button key={choice} type="button" aria-pressed={recognitionMode === choice} disabled={recognitionSwitching || !speechReady} className={recognitionMode === choice ? 'primary' : ''} onClick={() => void changeRecognitionMode(choice)}>{choice === 'fast' ? 'Fast' : 'Quality'}</button>)}</div><p className="hint" role="status">{recognitionSwitching ? 'Switching recognition mode…' : recognitionMode === 'fast' ? 'Fast: quicker recognition; may miss difficult words.' : 'Quality: better recognition; takes a little longer.'} Changing modes stops listening. The speaking voice stays the same.</p></fieldset>
+      <div className="actions"><button disabled={busy} onClick={() => void testSound()}>{testingSound ? 'Restart speaker test' : 'Test speakers'}</button><button disabled={busy || recognitionSwitching} onClick={() => void testMic()}>{testingMic ? 'Stop microphone test' : 'Test microphone'}</button></div>{testingMic && <p className="hint">Say a sentence. The transcript appears in “Heard” above. Test ends after 15 seconds.</p>}{speechError && <p className="hint">{speechError}</p>}<p className="hint">Sound uses your Windows default speakers or headphones.</p>
       <details><summary>Microphone & pause settings</summary><label htmlFor="mic">Microphone</label><select id="mic" value={device} onChange={e => { stop(); setDevice(e.target.value); setNotice('Microphone changed. Click Speak once, Auto, or Test microphone to use it.'); }}><option value="">Windows default input</option>{devices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || 'Microphone'}</option>)}</select><label htmlFor="silence">How long to wait after speech</label><select id="silence" value={silence} onChange={e => { stop(); setSilence(e.target.value); setNotice('Pause setting updated. Start listening again when ready.'); }}>{[500, 700, 1000, 1500].map(ms => <option key={ms} value={ms}>{ms} ms</option>)}</select><label htmlFor="sensitivity">Voice detection</label><select id="sensitivity" value={vadThreshold} onChange={e => { stop(); setVadThreshold(e.target.value); setNotice('Voice sensitivity updated. Start listening again when ready.'); }}><option value="0.35">Sensitive — better for quiet speech</option><option value="0.5">Normal — less background pickup</option></select><p className="hint">A longer pause helps if it cuts off the end of your question. Sensitive detection may pick up more background speech.</p></details>
     </section>
     <details className="debug"><summary>Debug details</summary><p className="hint">Speaker preparation: {ttsMs === null ? '—' : `${ttsMs} ms`}. Transcript and answer history is off by default.</p><label className="check"><input type="checkbox" checked={logging} onChange={e => { setLogging(e.target.checked); loggingRef.current = e.target.checked; if (!e.target.checked) setLogs([]); }} />Keep recent turns in this page</label><button onClick={() => setLogs([])}>Clear debug history</button>{logs.map((log, i) => <div className="turn" key={i}><p>{log.question}</p><strong>{log.answer}</strong><p className="hint">First token {log.first ?? '—'} ms · GPT complete {log.total} ms</p></div>)}</details>

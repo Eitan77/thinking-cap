@@ -69,6 +69,13 @@ const server=createServer(async(req,res)=>{
         try{const response=await speech('/health',{signal:AbortSignal.timeout(1500)});json(res,200,await response.json());}
         catch{json(res,200,{ready:false,error:'Local speech service is starting or unavailable.'});}return;
       }
+      if(path==='/api/recognition-mode'&&req.method==='POST'){
+        const data=await body(req);
+        if(!['fast','quality'].includes(data.mode)){json(res,400,{error:'Choose Fast or Quality recognition.'});return;}
+        const response=await speech('/recognition-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:data.mode}),signal:AbortSignal.timeout(180000)});
+        const result=await response.json();
+        json(res,response.status,response.ok?result:{error:result.detail??'Recognition mode could not be changed.'});return;
+      }
       if(path==='/api/ask'&&req.method==='POST'){
         const data=await body(req);
         if(typeof data.question!=='string'||!data.question.trim()||data.question.length>4000||typeof data.script!=='string'||data.script.length>12000||typeof data.model!=='string') {json(res,400,{error:'Invalid question, model, or script.'});return;}

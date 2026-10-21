@@ -13,6 +13,12 @@ Requires Node.js 22+, pnpm 11+, Python 3.11/3.12, and an eligible ChatGPT accoun
 
 Open **http://127.0.0.1:4317**. The local speech models warm up on startup; the first Whisper startup downloads its model. The helper starts the Python speech service automatically. Leave the terminal running; Ctrl+C stops it. Only one instance can use these ports.
 
+Under **Check your audio → Speech recognition**, choose **Fast** (`tiny.en`) or **Quality** (`base.en`). Fast may lose accuracy on noisy or difficult speech. Switching stops listening; start Auto or Speak once again afterwards. Models load on first use and stay cached for the running session. The mode applies to this local service, including other open tabs, and resets to the startup choice when the service restarts. Piper's speaking voice stays unchanged.
+
+The **Output voice speed** slider adjusts playback from **0.5× to 2×** while preserving pitch, including during playback. It defaults to **1×** and saves your preference in this browser. **Test speakers** uses the selected speed too.
+
+To start in Fast mode, run `./scripts/start.ps1 -FastSpeech`. Normal startup uses Quality unless `THINKING_CAP_WHISPER_MODEL` is set. To restore the baseline in the same PowerShell session, remove that override with `Remove-Item Env:THINKING_CAP_WHISPER_MODEL -ErrorAction SilentlyContinue`, then start normally.
+
 1. In **Connect ChatGPT**, click **Continue with ChatGPT**, then **Open ChatGPT sign-in** when the link appears. Complete authorization and return to the app. The model picker loads your account's actual catalog. Identity-only sign-in does not enable inference. Cancel sign-in is available throughout.
 2. In **Tell it how to respond**, edit the instructions and click **Save instructions**, or keep the ready default. The applied script is sent with every question; the last four answered turns supply bounded conversation context. Saving persists the script in this browser, cancels pending work and clears context.
 3. In **Ask something**, try a typed question, click **Speak once**, or choose **Auto**. The page explains missing prerequisites when you click a control. **Stop / mic off** cancels everything.

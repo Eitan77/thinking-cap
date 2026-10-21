@@ -11,6 +11,11 @@ button, .button { cursor: pointer; display: inline-block; border: 1px solid #cbd
 button:hover, .button:hover { background: #eef3fa; border-color: #91a7c6; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #96bbff; outline-offset: 2px; }
 button:disabled { cursor: progress; opacity: .65; }
+.recognition { border: 0; padding: 0; margin: 16px 0; min-width: 0; }
+.recognition legend { font-weight: 600; margin-bottom: 8px; }
+.voice-speed { margin: 16px 0; }
+.voice-speed input { padding: 0; border: 0; accent-color: #285caa; cursor: pointer; }
+.speed-labels { display: flex; justify-content: space-between; color: #748092; font-size: 12px; }
 .primary { background: #285caa; border-color: #285caa; color: white; }
 .primary:hover { background: #204d91; color: white; }
 .stop { color: #9b3737; }
