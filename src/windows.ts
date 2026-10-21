@@ -1,4 +1,4 @@
-import type {AIProvider,Speaker,TranscriptEvent,Turn} from './core';
+import type {AIProvider,Result,Speaker,TranscriptEvent,Turn} from './core';
 export const API = typeof location!=='undefined'&&location.port==='8081'?'http://127.0.0.1:4317':'';
 export async function request(path:string,data?:unknown,signal?:AbortSignal){
   const response=await fetch(API+'/api/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),signal:signal??AbortSignal.timeout(20000)});
@@ -8,7 +8,31 @@ export class WindowsAI implements AIProvider {
   model='';
   effort='';
   webSearch=true;
-  ask(turn:Turn,signal:AbortSignal){if(!this.model)throw new Error('Connect ChatGPT and select a model first.');return request('ask',{...turn,model:this.model,effort:this.effort,webSearch:this.webSearch,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone},signal);}
+  async ask(turn:Turn,signal:AbortSignal,onSpeech?:(text:string)=>void):Promise<Result>{
+    if(!this.model)throw new Error('Connect ChatGPT and select a model first.');
+    const response=await fetch(API+'/api/ask',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/x-ndjson'},body:JSON.stringify({...turn,model:this.model,effort:this.effort,webSearch:this.webSearch,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone}),signal});
+    if(!response.ok){const error=await response.json();throw new Error(error.error??'GPT request failed.');}
+    if(!response.body)throw new Error('The answer stream was unavailable.');
+    const reader=response.body.getReader();const decoder=new TextDecoder();let pending='';let result:Result|undefined;
+    try {
+      while(true){
+        const {value,done}=await reader.read();signal.throwIfAborted();
+        pending+=decoder.decode(value,{stream:!done});
+        if(pending.length>64000)throw new Error('The answer stream was too large.');
+        let end;
+        while((end=pending.indexOf('\n'))>=0){
+          const line=pending.slice(0,end);pending=pending.slice(end+1);if(!line.trim())continue;
+          const event=JSON.parse(line);
+          if(event.type==='error')throw new Error(event.error||'The answer stream failed.');
+          if(event.type==='speech'&&typeof event.text==='string')onSpeech?.(event.text);
+          if(event.type==='result')result=event.result;
+        }
+        if(done)break;
+      }
+      if(pending.trim()||!result)throw new Error('The answer stream ended before completion.');
+      return result;
+    } finally {await reader.cancel().catch(()=>{});reader.releaseLock();}
+  }
 }
 export class WindowsSpeaker implements Speaker {
   private audio?:HTMLAudioElement; private url?:string; private finish?:()=>void;

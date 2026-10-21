@@ -31,7 +31,7 @@ export function validateAnswer(raw:string):{kind:'answer';text:string}|{kind:'si
 export type Message = {role:'user'|'assistant';content:string};
 export type Result = {text:string;firstTokenMs:number|null;totalMs:number;sources?:{url:string;title:string}[];searched?:boolean;local?:boolean};
 export type Turn = {id:string;question:string;script:string;history:Message[]};
-export interface AIProvider { ask(turn:Turn, signal:AbortSignal):Promise<Result> }
+export interface AIProvider { ask(turn:Turn, signal:AbortSignal,onSpeech?:(text:string)=>void):Promise<Result> }
 export interface Speaker { speak(text:string,signal:AbortSignal):Promise<void>; stop():void }
 
 /** Queue finalized questions in order. Epoch cancellation prevents stale answers after Off/reset. */
@@ -79,19 +79,30 @@ export class Controller {
           this.set('THINKING');
           const started=performance.now();
           const number=localMath(item.question);
-          const timing:Result=number===null?await this.ai.ask({...item,script:this.script,history:[...this.history]},ac.signal)
+          let streamed=false;let speechError:unknown;let playback=Promise.resolve();
+          const enqueueSpeech=(text:string)=>{
+            if(ac.signal.aborted||epoch!==this.epoch||speechError)return;
+            const chunk=validateAnswer(text);if(chunk.kind!=='answer')return;
+            streamed=true;
+            playback=playback.then(async()=>{
+              if(ac.signal.aborted||epoch!==this.epoch||speechError)return;
+              this.set('SPEAKING');await this.speaker.speak(chunk.text,ac.signal);
+            }).catch(error=>{speechError=error;});
+          };
+          const timing:Result=number===null?await this.ai.ask({...item,script:this.script,history:[...this.history]},ac.signal,enqueueSpeech)
             :{text:number,firstTokenMs:0,totalMs:Math.round(performance.now()-started),local:true};
           if(ac.signal.aborted||epoch!==this.epoch)continue;
           const result=validateAnswer(timing.text); this.onResult(item.question,result,timing);
           if(result.kind==='error')throw new Error(result.reason);
           if(result.kind==='answer') {
             this.history=[...this.history,{role:'user',content:item.question},{role:'assistant',content:result.text}].slice(-8) as Message[];
-            this.set('SPEAKING'); await this.speaker.speak(result.text,ac.signal);
+            if(streamed){await playback;if(speechError)throw speechError;}
+            else {this.set('SPEAKING');await this.speaker.speak(result.text,ac.signal);}
             if(ac.signal.aborted||epoch!==this.epoch)continue;
             this.set('COOLDOWN');
             await new Promise<void>(resolve=>{const t=setTimeout(resolve,250);ac.signal.addEventListener('abort',()=>{clearTimeout(t);resolve();},{once:true});});
           }
-        } catch(e) { if(!ac.signal.aborted&&epoch===this.epoch){this.set('ERROR');this.onError(e instanceof Error?e.message:'Request failed.');this.queue=[];} }
+        } catch(e) { if(!ac.signal.aborted&&epoch===this.epoch){ac.abort();this.speaker.stop();this.set('ERROR');this.onError(e instanceof Error?e.message:'Request failed.');this.queue=[];} }
         finally { if(epoch===this.epoch){this.active=undefined;if((this.mode as Mode)!=='off')this.set('LISTENING');} }
       }
     } finally {this.draining=false;if(this.queue.length&&this.mode!=='off')void this.drain();}

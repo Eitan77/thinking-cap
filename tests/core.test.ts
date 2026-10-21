@@ -3,6 +3,30 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {Controller,questions,validateAnswer,type Turn,type Result,type TranscriptEvent} from '../src/core';
 const wait=()=>new Promise(r=>setTimeout(r,10));
+test('streamed speech starts before GPT completion, stays ordered, and is not repeated',async()=>{
+  const spoken:string[]=[];let complete!:(r:Result)=>void;let chunk!:(text:string)=>void;
+  const c=new Controller({ask(_turn,_signal,onSpeech){chunk=onSpeech!;return new Promise(resolve=>complete=resolve);}},{async speak(text){spoken.push(text);},stop(){}});
+  c.setMode('assistant');c.manual('Explain gravity');chunk('First sentence.');await wait();
+  assert.deepEqual(spoken,['First sentence.']);assert.equal(c.state,'SPEAKING');
+  chunk('Second sentence.');complete({text:'First sentence. Second sentence.',firstTokenMs:1,totalMs:2});await wait();
+  assert.deepEqual(spoken,['First sentence.','Second sentence.']);assert.equal(c.history.at(-1)?.content,'First sentence. Second sentence.');c.setMode('off');
+});
+
+test('stream errors stop queued speech and do not store partial history',async()=>{
+  let reject!:(error:Error)=>void;let chunk!:(text:string)=>void;let stops=0;const spoken:string[]=[];let error='';
+  const c=new Controller({ask(_turn,_signal,onSpeech){chunk=onSpeech!;return new Promise((_resolve,r)=>reject=r);}},{async speak(text){spoken.push(text);},stop(){stops++;}});
+  c.onError=text=>error=text;c.setMode('assistant');c.manual('Explain gravity');chunk('First sentence.');await wait();
+  reject(new Error('Stream interrupted'));await wait();chunk('Stale sentence.');await wait();
+  assert.deepEqual(spoken,['First sentence.']);assert.equal(error,'Stream interrupted');assert.deepEqual(c.history,[]);assert.ok(stops>=2);c.setMode('off');
+});
+
+test('off cancels queued streamed sentences',async()=>{
+  let complete!:(r:Result)=>void;let chunk!:(text:string)=>void;let finish!:()=>void;const spoken:string[]=[];
+  const c=new Controller({ask(_turn,_signal,onSpeech){chunk=onSpeech!;return new Promise(resolve=>complete=resolve);}},{speak(text){spoken.push(text);return new Promise<void>(resolve=>finish=resolve);},stop(){finish?.();}});
+  c.setMode('assistant');c.manual('Explain gravity');chunk('First sentence.');chunk('Second sentence.');await wait();
+  c.setMode('off');complete({text:'First sentence. Second sentence.',firstTokenMs:1,totalMs:2});await wait();
+  assert.deepEqual(spoken,['First sentence.']);assert.equal(c.state,'OFF');assert.deepEqual(c.history,[]);
+});
 function event(text:string,id='u1',isFinal=true):TranscriptEvent{return {sessionId:'s',utteranceId:id,text,isFinal,timestampMs:Date.now()};}
 function fixture(){const turns:Turn[]=[],spoken:string[]=[];let result='SILENT';const c=new Controller({async ask(t){turns.push(t);return{text:result,firstTokenMs:1,totalMs:2};}},{async speak(text){spoken.push(text);},stop(){}});return{c,turns,spoken,setResult:(s:string)=>result=s};}
 test('36-case question corpus detects candidates (expected model answers require live evaluation)',()=>{

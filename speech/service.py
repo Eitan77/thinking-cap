@@ -6,7 +6,6 @@ import os
 import time
 import uuid
 import wave
-import itertools
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -138,59 +137,47 @@ async def listen(ws: WebSocket):
     samples = 0
     silence = 0
     speech_frames = 0
-    last_partial = 0
     utterance = str(uuid.uuid4())
     suppressed = False
-    silence_ms = 500
+    silence_ms = 400
     vad_threshold = 0.35
     revision = 0
-    transcript_queue = asyncio.PriorityQueue(maxsize=8)
-    sequence = itertools.count()
-    finalized = set()
-    finalized_order = deque(maxlen=256)
-    partial_busy = False
-    last_partial_text = ''
-    stable_since = 0
+    transcript_queue = asyncio.Queue(maxsize=8)
 
     def reset(invalidate=True):
-        nonlocal frames, samples, silence, speech_frames, last_partial, utterance, revision, pending, last_partial_text, stable_since
-        frames = []; samples = 0; silence = 0; speech_frames = 0; last_partial = 0
+        nonlocal frames, samples, silence, speech_frames, utterance, revision, pending
+        frames = []; samples = 0; silence = 0; speech_frames = 0
         utterance = str(uuid.uuid4())
         if invalidate:
             revision += 1
         pending = np.empty(0, dtype=np.float32); preroll.clear(); vad.reset_states()
-        last_partial_text = ''; stable_since = 0
 
     async def inference_worker():
-        nonlocal last_partial_text, stable_since, partial_busy
         while True:
-            _, _, audio, uid, final, rev, queued_at, endpoint_ms = await transcript_queue.get()
+            audio, uid, rev, queued_at, endpoint_ms = await transcript_queue.get()
             try:
-                if rev != revision or (not final and (suppressed or uid in finalized)):
+                if rev != revision:
                     continue
                 started = time.monotonic()
                 async with inference_lock:
+                    if rev != revision:
+                        continue
                     text = await asyncio.to_thread(transcribe, audio)
-                if rev != revision or (not final and (suppressed or uid in finalized)):
+                if rev != revision:
                     continue
-                if uid == utterance and text != last_partial_text:
-                    last_partial_text = text; stable_since = time.monotonic()
-                if text or final:
-                    await ws.send_json({'type': 'transcript', 'sessionId': session, 'utteranceId': uid, 'text': text, 'isFinal': final, 'timestampMs': int(time.time()*1000), 'sttMs': round((time.monotonic()-queued_at)*1000), 'inferenceMs': round((time.monotonic()-started)*1000), 'endpointMs': endpoint_ms})
+                await ws.send_json({'type': 'transcript', 'sessionId': session, 'utteranceId': uid, 'text': text, 'isFinal': True, 'timestampMs': int(time.time()*1000), 'sttMs': round((time.monotonic()-queued_at)*1000), 'inferenceMs': round((time.monotonic()-started)*1000), 'endpointMs': endpoint_ms})
             except asyncio.CancelledError:
                 raise
             except Exception:
                 await ws.send_json({'type':'error','message':'Transcription failed. Restart listening.'})
             finally:
-                if not final:
-                    partial_busy = False
                 transcript_queue.task_done()
 
     worker = asyncio.create_task(inference_worker())
     await ws.send_json({'type': 'ready', 'sessionId': session})
 
     async def finish():
-        nonlocal frames, samples, silence, speech_frames, last_partial, utterance
+        nonlocal frames, samples, silence, speech_frames, utterance
         if speech_frames >= 3 and frames:
             audio = np.concatenate(frames).copy()
             # Long endpoint silence need not be decoded again by Whisper.
@@ -199,13 +186,9 @@ async def listen(ws: WebSocket):
             if transcript_queue.full():
                 await ws.send_json({'type':'error','message':'Speech processing fell behind. Stop and restart listening.'})
                 raise RuntimeError('Speech backlog')
-            if len(finalized_order) == finalized_order.maxlen:
-                finalized.discard(finalized_order[0])
-            finalized_order.append(utterance)
-            finalized.add(utterance)
-            transcript_queue.put_nowait((0, next(sequence), audio, utterance, True, revision, time.monotonic(), round(silence*1000/16000)))
+            transcript_queue.put_nowait((audio, utterance, revision, time.monotonic(), round(silence*1000/16000)))
             await ws.send_json({'type':'status','message':'Question ended — transcribing final audio…'})
-        frames = []; samples = 0; silence = 0; speech_frames = 0; last_partial = 0
+        frames = []; samples = 0; silence = 0; speech_frames = 0
         utterance = str(uuid.uuid4()); preroll.clear()
 
     try:
@@ -217,7 +200,7 @@ async def listen(ws: WebSocket):
                 command = json.loads(msg['text'])
                 action = command.get('type')
                 if action == 'configure':
-                    silence_ms = max(400, min(2000, int(command.get('silenceMs', 500))))
+                    silence_ms = max(400, min(2000, int(command.get('silenceMs', 400))))
                     vad_threshold = max(0.2, min(0.8, float(command.get('vadThreshold', 0.35))))
                 elif action == 'arm':
                     reset()
@@ -243,7 +226,7 @@ async def listen(ws: WebSocket):
                     if not speaking:
                         continue
                     frames = list(preroll); samples = len(frames)*512; speech_frames = 1
-                    last_partial = samples
+                    await ws.send_json({'type':'status','message':'Hearing speech…'})
                 else:
                     frames.append(frame); samples += 512
                     if speaking: speech_frames += 1
@@ -253,17 +236,9 @@ async def listen(ws: WebSocket):
                     reset()
                     await ws.send_json({'type':'error','message':'Utterance exceeded 30 seconds. Please use shorter questions.'})
                     break
-                if samples - last_partial >= 24000 and silence == 0 and not partial_busy and not transcript_queue.full():
-                    # Only one partial can be queued or running. Final jobs have
-                    # priority, preventing redundant rolling decodes from backing up.
-                    if transcript_queue.empty():
-                        partial_busy = True
-                        transcript_queue.put_nowait((1, next(sequence), np.concatenate(frames).copy(), utterance, False, revision, time.monotonic(), 0))
-                    last_partial = samples
+                # Decode once at the endpoint. Rolling whole-utterance partials
+                # consumed the same CPU/lock and could delay the final result.
                 if silence*1000/16000 >= silence_ms:
-                    # Require at least 200ms stability after a recently revised partial.
-                    if last_partial_text and time.monotonic()-stable_since < 0.2:
-                        continue
                     await finish()
     except (WebSocketDisconnect, RuntimeError):
         pass
